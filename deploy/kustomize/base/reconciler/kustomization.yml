@@ -1,0 +1,28 @@
+generators:
+  - helmChart.yml
+
+# The MySQL server's CA, delivered as a ConfigMap rather than baked into the image.
+#
+# PUBLIC, not a secret: a CA certificate is the thing you check a server against, and it
+# carries no private key (asserted below before it was committed). The password lives in
+# Doppler and never touches this repo.
+#
+# A ConfigMap rather than a COPY in the Dockerfile because the one thing that rotates this
+# certificate is a DreamHost VPS rebuild, which mints a fresh self-signed CA. Through a
+# ConfigMap that is a `deploy/**` commit; baked into the image it would be a code commit, a
+# CI build and an image bump to ship one public file.
+#
+# `disableNameSuffixHash` is REQUIRED here, and not the usual convenience. Kustomize's content
+# hash is only useful if references to the name get rewritten, and its nameReference transformer
+# knows how to do that for built-in kinds (a Deployment's volumes — which is why Vector's
+# generated configs work without this). The consumer here is an Argo `WorkflowTemplate`, a CRD
+# kustomize has no reference rules for, so a hashed name would render a volume pointing at a
+# ConfigMap that does not exist. Verified by rendering: see the test in tests/.
+configMapGenerator:
+  - name: reconciler-mysql-ca
+    namespace: inference
+    files:
+      - ./mysql-ca.pem
+
+generatorOptions:
+  disableNameSuffixHash: true

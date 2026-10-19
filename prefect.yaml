@@ -1,0 +1,183 @@
+# Prefect deployments for the process tier (ADR 0012).
+#
+# TIER 2, SINCE 2026-09-03. Scheduling moved to Argo Workflows on the cluster; what is left
+# here runs each flow ONCE A DAY as an independent backstop. See the ADR amendment
+# "Scheduling moves to Argo Workflows" for the full evidence — the short version is that
+# Managed Execution bills a **60-second minimum per run** (measured: 3 runs = 180s, 1 = 60s,
+# 10 = 600s, exactly 60s each regardless of a run's real ~45s duration) against a workspace
+# limit of **30,000 compute-seconds/month**. That is 500 runs a month, and the hourly
+# `dreamhost-invoice-advance` alone was 744 — 149% of quota, exhausted around the 17th.
+#
+# The consequence worth carrying: making a flow FASTER saved nothing. Only fewer runs did.
+#
+# Prefect is kept rather than removed, and what it actually covers is narrower than the first
+# version of this comment claimed. Its COMPUTE is independent; its I/O IS NOT. Four of the
+# reconciler's six dependencies are in-cluster — the three n8n relays (Gmail query, mail, LLM)
+# and the Vector ingest gateway — so in a cluster outage a run here can read Neon and decide,
+# then cannot query Gmail, cannot send mail, and cannot RECORD a milestone. The cluster is the
+# single point of failure, not this. (Corrected 2026-09-04; see ADR 0012's amendment for the
+# dependency table.)
+#
+# What it does cover is the class where THE SCHEDULE IS BROKEN WHILE THE CLUSTER IS FINE — a
+# misconfigured CronWorkflow, a crashed controller, a bad image. Demonstrated within hours of
+# the move: a `spec.schedule` (singular, removed in Argo v4) meant neither cron fired at all on
+# a healthy cluster, and the 06:17 run here would have advanced the invoice anyway. At ~61
+# runs/month it costs about 12% of the quota.
+#
+# WHAT STAYED HERE: the monthly opener, unchanged. Twelve runs a year is quota-irrelevant, it
+# is the only thing that CREATES a cycle (so exactly one owner is a feature, not a gap), and
+# tests/test_reconciler_app.py pins its cron to the definition's own `opens:` block.
+#
+# HOW THE CODE GETS THERE: cloned from the public GitHub repo at run time. Public is doing real
+# work here — a private repo would need a credential block, and the tier's whole credential
+# story is "one token, held by us". Nothing secret is in the repo; the secrets arrive as
+# environment variables on the deployment (below).
+#
+# DEPLOY:
+#     uv run --with prefect prefect cloud login          # once, interactive
+#     uv run --with prefect prefect work-pool create aware-managed --type prefect:managed
+#     uv run --with prefect prefect deploy --all
+#
+# The opener's schedule mirrors the process definition's own `opens:` block, and
+# tests/test_reconciler_app.py asserts they still agree — a cron edited in one place and not
+# the other is otherwise invisible until an invoice does not happen.
+
+name: aware-processes
+prefect-version: 3.0.0
+
+pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/rodis/inference.git
+      branch: main
+
+definitions:
+  work_pool: &managed
+    name: aware-managed
+    job_variables:
+      # The reconciler's real dependencies, and only those. The project itself is deliberately
+      # NOT installed: `pyproject.toml`'s base deps include quixstreams (the inference runtime's
+      # data plane), which this tier never imports and which would drag confluent-kafka into
+      # every managed run for nothing.
+      pip_packages:
+        - psycopg[binary]>=3.1
+        - pymysql>=1.1
+        - pydantic>=2.6
+        - pyyaml
+        - python-dotenv
+      env:
+        # NOTE: `PYTHONPATH` is deliberately NOT set here. It does not work — verified against
+        # the live pool with both `src` and the absolute clone path; the flow-loading process
+        # never sees `job_variables.env`, and both crashed with `ModuleNotFoundError: No module
+        # named 'reconciler'`. `src/reconciler/flow.py` bootstraps its own `sys.path` instead.
+        # Treat everything in this block as best-effort for the same reason.
+        #
+        # NO application secrets here, and none as Prefect secrets either. Prefect holds ONE
+        # credential — a read-only Doppler service token in the `doppler-token` Secret block —
+        # and `flow.py` reads the other eight from Doppler at run time. Copying them into
+        # Prefect would make it a second source of truth, which is exactly what cost 37 hours
+        # of dropped ingest on 2026-09-03 when one of two copies of a CA went stale.
+        #
+        # The token is scoped to a config that is the ROOT of its own `reconciler` environment,
+        # so it inherits nothing: it can resolve those eight and cannot see `avnadmin`'s Kafka
+        # private key, the BMW refresh token or the dashboard password. A branch config would
+        # NOT do — branch configs inherit their root.
+        PREFECT_LOGGING_LEVEL: INFO
+        # Delivers the tier's own `reconciler.*` records into the run log. `flow.py` raises
+        # their level; this is what attaches Prefect's handler to them. Without it the run
+        # shows only Prefect's own lines and none of the reasoning.
+        PREFECT_LOGGING_EXTRA_LOGGERS: reconciler
+
+deployments:
+  # Opens one cycle a month. Creates; never advances.
+  - name: dreamhost-invoice-open
+    entrypoint: src/reconciler/flow.py:open_cycle_flow
+    description: >-
+      Opens the monthly DreamHost invoice cycle for the month that just ended. The sequence
+      number is derived from the cycles already recorded, so opening one by hand in between
+      does not collide.
+    parameters:
+      process: dreamhost_invoice
+    work_pool: *managed
+    schedules:
+      # Must match `opens: {via: schedule, cron: ...}` in processes/dreamhost_invoice.yml.
+      - cron: "0 9 1 * *"
+        timezone: Europe/Zurich
+
+  # Advances whatever exists. Never creates.
+  - name: dreamhost-invoice-advance
+    entrypoint: src/reconciler/flow.py:advance_flow
+    description: >-
+      Walks every open cycle to its frontier. Hourly rather than continuous because every
+      stage it waits on — a human applying a label, a bank sending a notification — moves on
+      human timescales, and a pure function of recorded events loses nothing by being asked
+      less often.
+    parameters:
+      process: dreamhost_invoice
+    work_pool: *managed
+    # LIVE since 2026-09-03. It was paused until the Doppler token existed, because without
+    # NEON_DATABASE_URL every firing raises ConfigurationError and an hourly cron turns that
+    # into 24 failed runs a day.
+    #
+    # Two gotchas if you ever pause it again. A re-deploy does NOT unpause it — pause state is
+    # held in Prefect Cloud, not here. And `POST /deployments/{id}/resume_deployment` returned
+    # 200 while leaving `paused: true` AND the schedule's own `active: false`: those are two
+    # separate flags, so unpausing means PATCHing the deployment (`paused: false`) *and* the
+    # schedule (`active: true`). Confirm by checking that scheduled runs actually appear in
+    # `flow_runs/filter` — a 200 is not evidence.
+    schedules:
+      # DAILY since 2026-09-03 — tier 2. Argo's `advance-cycles` CronWorkflow carries the
+      # hourly cadence now; this firing exists to advance a stalled cycle when the cluster
+      # cannot. Early morning rather than midnight: off-peak on a shared free tier, and early
+      # enough that a cycle unblocked overnight has moved before anyone looks at the board.
+      #
+      # :47 IS NOT COSMETIC — it must not collide with the Argo CronWorkflow's :17. Two
+      # advances running at the same instant both read the same recorded milestones and both
+      # act on them, because a milestone reaches Neon ASYNCHRONOUSLY (gateway -> Kafka ->
+      # Vector -> persister; the same race that `walk_fresh` exists to avoid). The visible
+      # cost would be two identical approval mails. `concurrencyPolicy: Forbid` guards this
+      # inside Argo and knows nothing about Prefect, so the separation has to be here — and a
+      # test now asserts no Prefect cron shares a minute with an Argo schedule.
+      - cron: "47 6 * * *"
+        timezone: Europe/Zurich
+
+  # Unscheduled: the manual opener. `opens: {via: manual}` in the definition is what this is.
+  - name: dreamhost-invoice-open-manual
+    entrypoint: src/reconciler/flow.py:open_and_advance_flow
+    description: >-
+      Opens a cycle on demand and immediately walks it — an ad-hoc invoice (a bonus, with no
+      worked days at all: run it with use_previous_month=false), or a re-run after a void.
+      Also the fast feedback loop when changing what the approval mail says.
+    parameters:
+      process: dreamhost_invoice
+    work_pool: *managed
+
+  # Not a process — the email todo sweep (reconciler.tasks). Same tier, same credential, same
+  # "pure function of what is recorded" idea; a task simply has two states rather than stages.
+  - name: email-tasks-sweep
+    entrypoint: src/reconciler/flow.py:sweep_tasks_flow
+    description: >-
+      Reconciles the `aware/todo` Gmail label against the recorded task events: opens anything
+      labelled that we have no open for (repairing a dropped Gmail Trigger), and closes anything
+      open that is no longer labelled. Closing cannot come from a trigger at all — Gmail reports
+      a label being ADDED and never one being removed.
+    parameters:
+      label: aware/todo
+    work_pool: *managed
+    schedules:
+      # DAILY since 2026-09-03 — tier 2. Argo's `sweep-tasks` CronWorkflow runs every 5 minutes
+      # now, which is what the board actually wanted; this is the repair-of-the-repair.
+      # :37 rather than :17 so it does not queue behind the invoice advance for the same n8n
+      # relay and the same Managed-pool slot.
+      #
+      # KNOWN DIVERGENCE since 2026-10-13: Argo's sweep reads MySQL, this one still reads Neon,
+      # because `RECONCILER_STORE` is unset here and Prefect Managed runs outside DreamHost's
+      # network — the MySQL account is granted to a DreamCompute range, so a Prefect worker
+      # cannot connect at all. The backstop is therefore acting on a derived copy (the gateway
+      # POSTs Argo makes) rather than on the store of record. It stays useful: Gmail is the
+      # authority either way, so the events it emits are correct, and Neon learns from its own
+      # POST. What it cannot do is update MySQL, so a close it emits during an Argo outage is
+      # re-emitted by Argo on recovery — one duplicate row on the timeline, which the
+      # latest-open-vs-latest-close join absorbs. Accepted rather than fixed; the alternative
+      # is retiring this deployment, and a backstop that over-reports beats none.
+      - cron: "37 6 * * *"
+        timezone: Europe/Zurich

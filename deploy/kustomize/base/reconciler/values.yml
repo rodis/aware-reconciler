@@ -1,0 +1,293 @@
+# The process tier's SCHEDULE (ADR 0012, amended 2026-09-03). The engine that runs it is a
+# separate app — deploy/workflows/, tracking `main`; this is the workload, and it lives in the
+# inference app precisely so CI's image pinning applies to it.
+#
+# WHY THE STAKATER APPLICATION CHART FOR A THING WITH NO APPLICATION. This looks odd and is
+# deliberate. `publish-images.yml` auto-discovers `workers/<name>/Dockerfile` and bumps
+# `deploy/inference/kustomize/base/<slug>/values.yml`'s `.deployment.image.tag` to
+# `sha-<short>` on deploy-state — that is the ONE image-pinning mechanism in this repo, and
+# reproducing it for a hand-written manifest would mean a second one. So the CronWorkflows ride
+# in `extraObjects`, which the chart renders through `tpl`, and read the tag CI wrote. The
+# Deployment and Service the chart exists to produce are switched off below.
+#
+# The alternative was `:latest` with `pullPolicy: Always`, which needs none of this and pins
+# nothing: no way to say which commit is running, and no rollback that is not a code revert.
+applicationName: reconciler
+
+deployment:
+  # There is no long-running process here. A reconciler run is a pure function of recorded
+  # milestones that finishes in seconds; keeping a pod alive to do nothing between firings is
+  # the shape this tier was designed to avoid.
+  enabled: false
+  image:
+    repository: ghcr.io/rodis/inference-reconciler
+    tag: "sha-bootstrap"   # placeholder; CI bumps this to sha-<short> on deploy-state
+    pullPolicy: IfNotPresent
+
+service:
+  # Nothing listens. Also required: the chart names its Service after `applicationName`, and
+  # leaving it on would put a second endpoint-less Service in this namespace for no reason.
+  enabled: false
+
+# ---------------------------------------------------------------------------------------------
+# TRAP FOR WHOEVER EXTENDS THIS: everything below is rendered through Helm's `tpl`, so `{{ }}`
+# is HELM's, not Argo's. Argo Workflows' own expressions — `{{inputs.parameters.x}}`,
+# `{{workflow.name}}`, `{{steps.a.outputs.result}}` — will be evaluated by Helm first and fail
+# the BUILD, which under Argo CD means the whole inference app wedges in ComparisonError.
+#
+# That is why the templates below take no parameters and carry fixed `args`. If you ever need
+# an Argo expression here, `{{"{{"}}` it or move the manifest out of `extraObjects` into a
+# plain resource (and give up the tag pinning above).
+# ---------------------------------------------------------------------------------------------
+extraObjects:
+  - apiVersion: argoproj.io/v1alpha1
+    kind: WorkflowTemplate
+    metadata:
+      name: reconciler
+      namespace: inference
+    spec:
+      # Created by the argo-workflows chart (workflow.serviceAccount), which gives it exactly
+      # what the executor needs and nothing more. The reconciler itself never talks to the
+      # Kubernetes API — only to Neon and HTTPS relays.
+      serviceAccountName: argo-workflow
+      # Advancing is the default because it is the act with a consumer waiting on it; a
+      # CronWorkflow overrides this per schedule.
+      entrypoint: advance-cycles
+
+      # The MySQL server's CA, for the store the tier is migrating to. Declared at SPEC level
+      # rather than per template: Argo makes `spec.volumes` available to every template, and
+      # both templates share one container anchor, so one declaration covers both.
+      #
+      # The name is unhashed on purpose — see ./kustomization.yml for why a CRD reference
+      # cannot survive kustomize's content hash.
+      volumes:
+        - name: mysql-ca
+          configMap:
+            name: reconciler-mysql-ca
+
+      templates:
+        - name: advance-cycles
+          # Walks every open cycle to its frontier. Creates nothing, ever — `open` is a
+          # separate act with a separate owner (Prefect's monthly deployment), because
+          # merging them would make the loop a scheduler.
+          container: &reconciler
+            image: "{{ .Values.deployment.image.repository }}:{{ .Values.deployment.image.tag }}"
+            imagePullPolicy: "{{ .Values.deployment.image.pullPolicy }}"
+            # EXPLICIT `command`, even though the image sets the same ENTRYPOINT.
+            #
+            # The emissary executor needs to know the entrypoint, and with only `args` given it
+            # resolves it by reading the image's config from the registry. That works for a
+            # public ghcr image and is a dependency worth not having: it turns a registry
+            # hiccup into a workflow that cannot start, for no benefit over saying it here.
+            command: ["python", "-m", "reconciler.run"]
+            args: ["reconcile", "--process", "dreamhost_invoice"]
+            # The Kubernetes way in: the Doppler operator syncs the tier's own `reconciler`
+            # config into this Secret and `envFrom` injects all of it, so the pod needs no
+            # bootstrap credential and makes no run-time call to Doppler to start working.
+            #
+            # This is NOT a second source of truth — the distinction that matters, and the one
+            # the 2026-09-03 CA incident turned on. That was two *authored* copies of a value,
+            # one of which went stale. This is a derived copy the operator refreshes from the
+            # single authored source every 60 seconds, exactly as Vector and the dashboard get
+            # theirs.
+            #
+            # `envFrom` rather than an enumerated `env:` so this manifest never lists the
+            # secrets: adding a ninth is a Doppler edit with no deploy at all. See
+            # ../reconciler-credentials.yml for why there is no allow-list either.
+            envFrom:
+              - secretRef:
+                  name: reconciler-credentials
+            volumeMounts:
+              - name: mysql-ca
+                mountPath: /etc/ssl/mysql
+                readOnly: true
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            # WHICH STORE this entrypoint reads its own recorded state from. Plain config,
+            # not a secret, so it lives here and not in Doppler — and that is the point rather
+            # than tidiness: the cutover is a commit with a diff and a revert, not a console
+            # edit. The estate already learned this the expensive way, with Argo schedules as
+            # manifests while Prefect's pause state lived in the console and did not survive a
+            # redeploy.
+            #
+            # TRAP, now that the two entrypoints read DIFFERENT stores: this block sits inside
+            # the `&reconciler` anchor, and `<<: *reconciler` followed by its own `env:`
+            # REPLACES this list rather than extending it. So `sweep-tasks` below repeats
+            # MYSQL_SSL_CA, and anything added here has to be added there too.
+            # `test_both_reconciler_templates_declare_their_store` fails if either template
+            # stops saying which store it reads — the code default (`neon`, in app.py) is
+            # silent, so an accidental omission would look exactly like a deliberate choice.
+            #
+            # `mysql` since 2026-10-18 — the SECOND half of the cutover, and the risky one.
+            # An advance reading a store that is behind cannot see the milestone that gates a
+            # stage, so it REDOES the stage, and for `invoice_emailed` that means sending the
+            # invoice a second time. The sweep had no such act (re-closing a task costs one
+            # duplicate row on the timeline), which is why it went first.
+            #
+            # What made this safe was the WINDOW, not elapsed time. At the cutover all three
+            # cycles were `complete`, so there was no incomplete stage left to redo, and the
+            # next cycle does not exist until the monthly Prefect `open` mints it — a cycle is
+            # opened by an event, never by this schedule (ADR 0012). Drift was measured at
+            # zero first: no reconciler-tier event had reached Neon since the backfill, and a
+            # `reconcile --dry-run` replay over every cycle produced byte-identical plans from
+            # both stores. Moving it mid-cycle would have needed a fresh backfill immediately
+            # beforehand, because the writer only runs on `mysql` and anything recorded while
+            # this template still said `neon` reaches Neon alone.
+            env:
+              - name: RECONCILER_STORE
+                value: mysql
+              # Where the CA is mounted. HERE and not in the DSN, for the same reason as
+              # RECONCILER_STORE: a filesystem path is deploy-time config, so it belongs beside
+              # the volume that creates it rather than inside a Doppler secret, where moving the
+              # mount would be a console edit with no diff. Doppler then holds a pure
+              # credential. Set on BOTH templates — it was written on both while only one
+              # read MySQL, because the path is a property of the image and the volume rather
+              # than of the cutover, and leaving it off the Neon template would have made the
+              # flip a two-line change with one line easy to forget. Both read MySQL since
+              # 2026-10-18, so it is now simply required twice (see the anchor TRAP above).
+              - name: MYSQL_SSL_CA
+                value: /etc/ssl/mysql/mysql-ca.pem
+          retryStrategy: &retries
+            # Two retries, because the one transient fault this tier reliably meets is Neon's
+            # scale-to-zero: an idle compute suspends, and the first connection after that gets
+            # a dead socket ("SSL connection closed unexpectedly"). Retrying is free —
+            # advancing is idempotent by construction — and 30s is long enough for Neon to
+            # wake. `OnFailure` rather than `OnError`, so a genuine ConfigurationError (a
+            # missing secret) fails once and stays visible instead of being retried into noise.
+            limit: 2
+            retryPolicy: OnFailure
+            backoff:
+              duration: "30s"
+              factor: 2
+
+        - name: sweep-tasks
+          # Reconciles the `aware/todo` Gmail label against recorded task events. The only way
+          # a task can close from outside the dashboard: Gmail reports a label being ADDED and
+          # never one being removed, so no trigger can see a task finish.
+          container:
+            <<: *reconciler
+            args: ["sweep-tasks"]
+            # WHICH STORE this entrypoint reads its own recorded state from. Plain config,
+            # not a secret, so it lives here and not in Doppler — and that is the point rather
+            # than tidiness: the cutover is a commit with a diff and a revert, not a console
+            # edit. The estate already learned this the expensive way, with Argo schedules as
+            # manifests while Prefect's pause state lived in the console and did not survive a
+            # redeploy.
+            #
+            # `mysql` — THE CUTOVER, and it had to happen after the backfill: an empty MySQL
+            # reads as "nothing is open" rather than as an error, so a sweep against one would
+            # re-open every labelled mail. Rollback is this same word, changed back.
+            #
+            # On `mysql` the tier writes the store first and POSTs at the gateway second,
+            # best-effort (src/reconciler/recording.py). On `neon` it does not wrap the sink at
+            # all, because there the POST *is* the write.
+            env:
+              - name: RECONCILER_STORE
+                value: mysql
+              # Where the CA is mounted. HERE and not in the DSN, for the same reason as
+              # RECONCILER_STORE: a filesystem path is deploy-time config, so it belongs beside
+              # the volume that creates it rather than inside a Doppler secret, where moving the
+              # mount would be a console edit with no diff. Doppler then holds a pure
+              # credential. Set on BOTH templates — it was written on both while only one
+              # read MySQL, because the path is a property of the image and the volume rather
+              # than of the cutover, and leaving it off the Neon template would have made the
+              # flip a two-line change with one line easy to forget. Both read MySQL since
+              # 2026-10-18, so it is now simply required twice (see the anchor TRAP above).
+              - name: MYSQL_SSL_CA
+                value: /etc/ssl/mysql/mysql-ca.pem
+          retryStrategy: *retries
+
+  - apiVersion: argoproj.io/v1alpha1
+    kind: CronWorkflow
+    metadata:
+      name: advance-cycles
+      namespace: inference
+    spec:
+      # Hourly, as it was on Prefect — every stage this waits on moves on human timescales (a
+      # person applying a label, a bank sending a notification), and a pure function of
+      # recorded events loses nothing by being asked less often. Free compute changed the
+      # ceiling, not the need.
+      #
+      # `schedules`, PLURAL AND A LIST. Argo Workflows v4 removed the singular `schedule:`, and
+      # shipping it costs a full deploy cycle to discover: the minified CRDs
+      # (`crds.full: false`) use x-kubernetes-preserve-unknown-fields, so the API server accepts
+      # the dead field without a murmur and only the controller objects, at run time, with
+      # "cron workflow must have at least one schedule" — while `kubectl get cronworkflow` looks
+      # perfectly healthy and simply never fires. Deployed that way 2026-09-03; neither cron
+      # fired once.
+      schedules:
+        - "17 * * * *"
+      timezone: Europe/Zurich
+      # A second run while one is in flight could only re-derive the same frontier, but it
+      # could also send the same mail twice from two different processes' idea of "not sent
+      # yet". Cheaper to forbid than to reason about.
+      concurrencyPolicy: Forbid
+      # A firing missed by more than five minutes is not worth catching up: the next one is an
+      # hour away and re-derives everything anyway.
+      startingDeadlineSeconds: 300
+      # With the archive off, these limits plus the controller's 3-day TTL are the whole
+      # retention story. Failures are kept longer than successes because they are the only
+      # ones anyone reads.
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 5
+      workflowSpec:
+        workflowTemplateRef:
+          name: reconciler
+        entrypoint: advance-cycles
+        # Bounded so a hung HTTP call cannot hold the `Forbid` slot indefinitely and silently
+        # stop the schedule — the exact silent stall this tier exists to avoid.
+        activeDeadlineSeconds: 900
+
+  - apiVersion: argoproj.io/v1alpha1
+    kind: CronWorkflow
+    metadata:
+      name: sweep-tasks
+      namespace: inference
+    spec:
+      # EVERY 5 MINUTES — and the interval is no longer a compromise, it is a LATENCY BUDGET.
+      #
+      # Three successive constraints, worth keeping in one place because each one stopped
+      # mattering for a different reason:
+      #
+      #   hourly    — Prefect Managed billed a 60-second minimum against 30,000s/month, so
+      #               15-minute scheduling was 2,976 runs = 595% of quota, unavailable at any
+      #               price. Moving to Argo removed the per-run floor.
+      #   */15      — free compute, but every run woke a scale-to-zero Neon compute for five
+      #               minutes to do ten seconds of work: a 33% duty cycle by construction, on a
+      #               day when nothing happened. Reading MySQL instead removed that too.
+      #   */5       — nothing structural left. What sets it now is that the sweep became the
+      #               SOLE producer of `email_task_closed` (the dashboard's tick only removes
+      #               the label — see dashboard/app.py::close_task), so this interval IS how
+      #               long a ticked task takes to reach the Aware timeline. The board hides the
+      #               row meanwhile; the timeline simply waits.
+      #
+      # Not tighter than five, because every run is a Gmail query through the in-cluster n8n
+      # relay — 288/day at this rate — and the thing being waited on is a human reading mail.
+      #
+      # Plural and a list — see `advance-cycles` above for what the singular form costs.
+      schedules:
+        - "*/5 * * * *"
+      timezone: Europe/Zurich
+      concurrencyPolicy: Forbid
+      # Was 300 — the whole interval, which at `*/5` would let a missed firing be caught up
+      # just as the next one is due, and `Forbid` would then drop the next one instead. A
+      # sweep is a pure function of what is labelled now, so a skipped firing costs five
+      # minutes of latency and nothing else; catching one up late is worth less than keeping
+      # the schedule on its grid.
+      startingDeadlineSeconds: 120
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 5
+      workflowSpec:
+        workflowTemplateRef:
+          name: reconciler
+        entrypoint: sweep-tasks
+        # Deliberately under the interval, so a hung run frees the `Forbid` slot before the
+        # next firing rather than silently stopping the schedule. Moved 600 -> 240 with the
+        # interval: at `*/5` the old value was longer than the gap it was meant to fit inside,
+        # which is the failure it exists to prevent rather than a conservative setting.
+        activeDeadlineSeconds: 240

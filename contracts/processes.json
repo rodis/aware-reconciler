@@ -1,0 +1,130 @@
+{
+  "processes": [
+    {
+      "name": "dreamhost_invoice",
+      "label": "Dreamhost invoice",
+      "cycle_key": "dh_invoice_{year}_{seq:03d}",
+      "opens": [
+        {
+          "via": "schedule",
+          "cron": "0 9 1 * *"
+        },
+        {
+          "via": "manual",
+          "cron": null
+        }
+      ],
+      "stages": [
+        {
+          "name": "cycle_opened",
+          "label": "Cycle opened",
+          "kind": "genesis",
+          "after": [],
+          "detail": "opened",
+          "event": "dreamhost_invoice_cycle_opened"
+        },
+        {
+          "name": "computed_lines",
+          "label": "Computed lines",
+          "kind": "act",
+          "after": [
+            "cycle_opened"
+          ],
+          "detail": "lines.worked_days",
+          "event": "dreamhost_invoice_computed_lines"
+        },
+        {
+          "name": "approval_requested",
+          "label": "Approval requested",
+          "kind": "act",
+          "after": [
+            "computed_lines"
+          ],
+          "detail": "notify.approval_request",
+          "event": "dreamhost_invoice_approval_requested"
+        },
+        {
+          "name": "data_approved",
+          "label": "Data approved",
+          "kind": "await",
+          "after": [
+            "approval_requested"
+          ],
+          "detail": "gmail: aware/invoice-approved",
+          "event": "dreamhost_invoice_data_approved"
+        },
+        {
+          "name": "manual_lines",
+          "label": "Manual lines",
+          "kind": "act",
+          "after": [
+            "data_approved"
+          ],
+          "detail": "lines.manual",
+          "event": "dreamhost_invoice_manual_lines"
+        },
+        {
+          "name": "total_computed",
+          "label": "Total computed",
+          "kind": "act",
+          "after": [
+            "manual_lines"
+          ],
+          "detail": "compute.total",
+          "event": "dreamhost_invoice_total_computed"
+        },
+        {
+          "name": "invoice_generated",
+          "label": "Invoice generated",
+          "kind": "act",
+          "after": [
+            "total_computed"
+          ],
+          "detail": "craftmypdf.render",
+          "event": "dreamhost_invoice_invoice_generated"
+        },
+        {
+          "name": "invoice_emailed",
+          "label": "Invoice emailed",
+          "kind": "act",
+          "after": [
+            "invoice_generated"
+          ],
+          "detail": "notify.invoice_ready",
+          "event": "dreamhost_invoice_invoice_emailed"
+        },
+        {
+          "name": "invoice_approved",
+          "label": "Invoice approved",
+          "kind": "await",
+          "after": [
+            "invoice_emailed"
+          ],
+          "detail": "gmail: aware/invoice-approved",
+          "event": "dreamhost_invoice_invoice_approved"
+        },
+        {
+          "name": "payment_submitted",
+          "label": "Payment submitted",
+          "kind": "await",
+          "after": [
+            "invoice_approved"
+          ],
+          "detail": "classify: accounting@example.com",
+          "event": "dreamhost_invoice_payment_submitted"
+        },
+        {
+          "name": "payment_processed",
+          "label": "Payment processed",
+          "kind": "await",
+          "after": [
+            "payment_submitted"
+          ],
+          "detail": "classify: accounting@example.com",
+          "event": "dreamhost_invoice_payment_processed"
+        }
+      ],
+      "void_event": "dreamhost_invoice_cycle_voided"
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+# The monthly DreamHost invoice (ADR 0012) — the first process.
+#
+# An invoice is a SET OF LINES, not worked-days x day-rate with decorations: some carry no
+# worked days at all (a Christmas bonus is one manual line). So `computed_lines` may produce
+# ZERO lines and nothing branches on it — absence is graceful everywhere, or this file grows
+# conditionals (trip-wire 7).
+#
+# `cycle_key` numbers by a per-YEAR sequence rather than the month, because more than one
+# invoice can exist in a month. That also retires the padding mismatch that used to empty the
+# extras table silently (the live n8n table is `dh_invoice_4_2026`, the abandoned globals said
+# `dh_invoice_04_2026`).
+
+name: dreamhost_invoice
+cycle_key: "dh_invoice_{year}_{seq:03d}"
+
+opens:
+  # `via`, not `on` — YAML 1.1 resolves a bare `on` key to boolean true.
+  - {via: schedule, cron: "0 9 1 * *"}  # the regular monthly invoice
+  - {via: manual}                       # a bonus / ad-hoc invoice, on no cadence at all
+
+stages:
+  # May contribute nothing — a bonus invoice carries no worked period, and nothing branches
+  # on that. The rate lives here rather than inside an expression, which is where the prior
+  # art kept it (an Edit Fields assignment reading `days_count * 8 * <rate>`).
+  - name: computed_lines
+    kind: act
+    action: lines.worked_days
+    config:
+      # PLACEHOLDER. The real rate is commercial information and is not in this public repo;
+      # the deployed definition carries it. `lines.worked_days` treats `day_rate` as required
+      # and never defaults it, so a wrong number here produces a wrong invoice rather than an
+      # error — check it before pointing a real cycle at this file.
+      day_rate: 800        # 100/h x 8h
+      hours_per_day: 8
+
+  # Its own stage, not bookkeeping: without a recorded `approval_requested` the reconciler
+  # re-sends this email every single day until answered.
+  # `currency` is stated on EVERY money-rendering stage, not just the ones that compute a
+  # total. It was missing here and on `invoice_emailed`, and the default in
+  # `actions/notify.py` is EUR — so the approval mail a human reads showed "EUR 12,000.00"
+  # while the PDF said USD. Same digits, different symbol, on the one document whose entire
+  # job is to be checked by a person before the invoice is real.
+  - name: approval_requested
+    kind: act
+    after: [computed_lines]
+    action: notify.approval_request
+    config:
+      currency: USD
+
+  # GATE ①. Approval is a Gmail LABEL, not a reply — so no interpretation is involved:
+  # applying the label IS the decision. The reconciler ASKS Gmail (through n8n) at decision
+  # time rather than waiting to be told, so an unreachable n8n raises instead of looking
+  # exactly like "not approved yet".
+  #
+  # `correlate_on: subject` ties a labelled mail to THIS cycle — `approval_requested` recorded
+  # the subject it sent — so two invoices open at once (a monthly and a bonus) can never
+  # satisfy each other's gate.
+  #
+  # Note both gates share ONE label. Correlation is on subject, not on the label, so gate ②
+  # below cannot be closed by gate ①'s mail — which is why you need only one label in Gmail.
+  - name: data_approved
+    kind: await
+    after: [approval_requested]
+    signal:
+      source: gmail
+      label: aware/invoice-approved
+      correlate_on: subject
+      # The evidence's time is the mail's own `Date` header — i.e. roughly when WE sent the
+      # request, not when the label was applied — so it legitimately predates the milestone
+      # that asked for it. correlate_on is what keeps this window safe.
+      slack_seconds: 900
+
+  # AFTER gate ① on purpose. The approval wait is the window in which a human is actually
+  # looking at the numbers; the prior art read extras seconds after the run started, so the
+  # table had to be filled in before you had seen the draft.
+  - name: manual_lines
+    kind: act
+    after: [data_approved]
+    action: lines.manual
+
+  - name: total_computed
+    kind: act
+    after: [manual_lines]
+    action: compute.total
+    config:
+      currency: USD
+
+  # Called DIRECTLY, not through n8n: the CraftMyPDF n8n node is a community plugin and the
+  # cluster has no persistence, so it is lost on every pod restart. The REST API needs only an
+  # API key, so nothing here needs n8n's credential store the way Gmail and SMTP do.
+  #
+  # VAT is NOT a line here. The services are an export of services and exempt from Swiss VAT;
+  # the template requires a zero VAT row, so the render action appends it. Modelling it as a
+  # process line would inflate line_count and put a spurious VAT row in the approval mail.
+  - name: invoice_generated
+    kind: act
+    after: [total_computed]
+    action: craftmypdf.render
+    config:
+      template_id: REPLACE_ME             # the CraftMyPDF template this renders into
+      currency: USD
+      rate_per_hour: 100               # PLACEHOLDER, as in `computed_lines` above
+      worked_item_name: Amount          # the computed line prints as a bare "Amount"
+      # Printed verbatim. The invoice is dated to the LAST DAY OF THE WORKED PERIOD, not to
+      # whenever it is rendered — so a re-run weeks later prints the same date it replaced.
+      date_format: "%A, %-d %B %Y"      # Friday, 31 July 2026
+      month_format: "%B %Y"             # July 2026
+
+  # ② the rendered PDF, mailed back for a second look. A wrong total caught here is a void
+  # and a re-run, never an amendment — which is why no stage below needs a correction path.
+  - name: invoice_emailed
+    kind: act
+    after: [invoice_generated]
+    action: notify.invoice_ready
+    config:
+      currency: USD
+
+  # GATE ②. Same label, different subject, so the finder cannot confuse it with gate ①.
+  # Closing this means "the PDF is right, I am submitting it": submission itself is manual
+  # today and nothing observes it. When it is automated, an `invoice_submitted` act stage
+  # slots in here — a YAML change, no code.
+  - name: invoice_approved
+    kind: await
+    after: [invoice_emailed]
+    signal:
+      source: gmail
+      label: aware/invoice-approved
+      correlate_on: subject
+      slack_seconds: 900
+
+  # The two payment mails are ~3 HOURS apart (observed 2026-07-15: submitted 15:17, processed
+  # 18:12) — well inside one daily run, so a single run will see both already sitting in the
+  # mailbox. That is only survivable because a satisfied await is stamped with its EVIDENCE's
+  # time rather than the run's; otherwise this stage would search from the following morning
+  # and never see the 18:12 mail. See core.EVIDENCE_TIME_KEY.
+  #
+  # These two stages are the ONLY place in this process that needs a READING rather than a
+  # comparison: the mails share a sender and an invoice and differ only in wording, so nothing
+  # structural separates them. That is the semantic work ADR 0012 puts in the reconciler.
+  #
+  # `mentions: invoice_number` is the deterministic half and is NOT the classifier's job: the
+  # mail must name this cycle's invoice ("Invoice 7-2026" in DreamHost's wording, matched
+  # against our zero-padded "07-2026"). The question below is asked only of mail that already
+  # passed it, so the reading decides which step, never whose invoice.
+  #
+  # Both questions are worded around INITIATION vs OUTCOME, never around vocabulary, and that
+  # is not a stylistic preference — an earlier draft asked whether the payment had been "SENT
+  # or ISSUED" and matched the WRONG mail, because the completion notice says verbatim "A USD
+  # 16,896.00 payment was sent to you today". The one verb that reads as decisive is the one
+  # both mails share. (Symmetrically, "processed" appears only in Tipalti's subject line and
+  # nowhere in its body, so the classifier is shown both.) Keying on either would also
+  # reintroduce exactly the template-brittleness a classifier was chosen to avoid.
+  #
+  # Verified against both real 2026-07-15 mails, all four combinations — see
+  # tests/test_reconciler_classify.py. Re-run it after ANY edit here; the failure mode is a
+  # stage that matches the wrong mail, which is invisible until the next one never arrives.
+  - name: payment_submitted
+    kind: await
+    after: [invoice_approved]
+    signal:
+      source: classify
+      from: accounting@example.com
+      mentions: invoice_number
+      classify: >-
+        Does this email announce that a payment has been INITIATED — set in motion, submitted
+        for processing, or released for delivery — WITHOUT confirming that it has completed?
+        Answer true only for that initial announcement. Answer false if the email reports the
+        outcome of a payment: that it completed, succeeded, settled, cleared, or was
+        processed. Judge initiation versus outcome, not the particular verb used — an outcome
+        report may still describe the money as having been sent.
+
+  - name: payment_processed
+    kind: await
+    after: [payment_submitted]
+    signal:
+      source: classify
+      from: accounting@example.com
+      mentions: invoice_number
+      classify: >-
+        Is this email confirming that a payment already sent has now COMPLETED — processed,
+        settled, or successfully delivered? Answer true only for a confirmation of the
+        outcome. An earlier, separate email announced that the payment was being sent; that
+        announcement must NOT match here.

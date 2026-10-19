@@ -1,0 +1,11 @@
+.env
+workers/**/.env
+.claude/settings.local.json
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+
+# The vendored chart's own fetched subcharts, if `kustomize build --enable-helm` ever pulls any.
+deploy/kustomize/base/*/charts/*/charts/

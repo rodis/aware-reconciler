@@ -1,0 +1,22 @@
+# The process tier's runner image (ADR 0012, amended 2026-09-03 — scheduling moved to Argo
+# Workflows on the cluster).
+#
+# EXACTLY the packages `prefect.yaml`'s Managed pool installs, and for the same reason:
+# the project itself is deliberately NOT installed, because `pyproject.toml`'s base deps
+# include quixstreams (the inference runtime's data plane), which this tier never imports and
+# which would drag confluent-kafka into an image that only talks HTTP and Postgres.
+#
+# `pymysql` is here BEFORE anything selects it, and that is the point: `RECONCILER_STORE`
+# defaults to neon, so the image must already be able to serve the flip when it comes.
+# Deliberately NOT in `pyproject.toml` — `workers/runtime/Dockerfile` installs the project,
+# so a base dep would ship a MySQL driver into the inference runtime that never opens one.
+# Pure Python, so it adds no wheel-build and no C library to this image.
+#
+# Nothing here is the runner. `reconciler.flow` is the only module that imports Prefect and it
+# is not copied into this image — Argo invokes `reconciler.run`, the plain CLI. That is the
+# swappable-runner seam working as designed: a new runner is a new entrypoint, not a new tier.
+psycopg[binary]>=3.1
+pymysql>=1.1
+pydantic>=2.6
+pyyaml
+python-dotenv

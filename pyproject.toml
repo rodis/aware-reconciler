@@ -1,0 +1,72 @@
+[project]
+name = "reconciler"
+version = "0.1.0"
+description = "The process tier — declarative processes advanced by a reconciler that is a pure function of recorded milestones (ADR 0012)."
+requires-python = ">=3.13"
+
+# EVERY RUNTIME DEPENDENCY, AND NOTHING ELSE. Worth saying plainly because the list is the
+# whole point of this repo existing separately: in `inference` the project's base deps carried
+# `quixstreams` (the derivation runtime's data plane), which this tier never imports and which
+# drags `confluent-kafka` behind it. A tier that only speaks HTTP, Postgres and MySQL could not
+# install its own project without pulling in a Kafka client, and three workarounds grew out of
+# that single fact:
+#
+#   1. CI installed the project with `pip install -e . --no-deps`, then listed the real deps by
+#      hand — so a new dependency had to be added in two places or CI passed while the image
+#      failed.
+#   2. `workers/reconciler/requirements.txt` restated them for the image, kept in sync by hand.
+#   3. `prefect.yaml` restated them AGAIN as `pip_packages` for the Managed pool.
+#
+# All three are deleted here. The image installs the project, CI installs the project, and
+# Prefect installs the project. One list, this one.
+dependencies = [
+    "pydantic>=2.6",
+    "python-dotenv",
+    "pyyaml",
+    # Neon, still read-only during the migration window. The MySQL cutover completed
+    # 2026-10-18; this stays until the restore drill proves MySQL is reconstructible without it.
+    "psycopg[binary]>=3.1",
+    # MySQL, the store of record since 2026-10-18. Pure Python, so no wheel build and no C
+    # library in the image, and `pyformat` paramstyle (%(name)s) identical to psycopg — which is
+    # why the adapter's parameter dicts carried over unchanged.
+    "pymysql>=1.1",
+]
+
+[project.optional-dependencies]
+# ruff is PINNED TO A MINOR RANGE, and that is not fussiness. This project selects no rules,
+# so the lint contract IS whatever that ruff version defaults to — and the default set grows
+# between releases. `ruff>=0.6` resolved to 0.17 in this fresh lockfile while `inference`
+# sits on 0.15, and 33 "new" violations appeared in code that had not changed: unused-noqa,
+# import-sorting, FURB/TRY/PLW rules that simply did not exist in the older default.
+# Pin until the rule set is chosen explicitly, which is its own change.
+dev = ["pytest>=8", "ruff>=0.15,<0.16"]
+# Prefect is the TIER 2 backstop only — one run per flow per day on different infrastructure.
+# `reconciler.flow` is the only module that imports it, and that module is deliberately not
+# copied into the Argo image: Argo invokes `reconciler.run`, the plain CLI. A new runner is a
+# new entrypoint, not a new tier.
+processes = ["prefect>=3.0,<4"]
+
+[project.scripts]
+reconciler = "reconciler.run:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Carried over from `inference` UNCHANGED, deliberately. A split is the wrong moment to also
+# tighten linting: a stricter `select` turned up 13 pre-existing violations here, every one of
+# them in code that has been running in production for weeks. Re-litigating E402 against this
+# tier's deliberate lazy imports (see adapters/neon.py and adapters/mysql.py, where the import
+# sits inside the function because CI installs with no third-party packages) would be a
+# different change, with a different argument, and it does not belong in this commit.
+[tool.ruff]
+line-length = 100
+respect-gitignore = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]

@@ -1,0 +1,17 @@
+apiVersion: v2
+description: Generic helm chart for all kind of applications
+home: https://github.com/stakater/application
+icon: https://github.com/stakater/ForecastleIcons/blob/master/stakater.png
+keywords:
+- java
+- node
+- dotnet
+- kubernetes
+- stakater
+- application
+maintainers:
+- email: hello@stakater.com
+  name: Stakater
+name: application
+type: application
+version: 6.16.1
