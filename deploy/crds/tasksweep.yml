@@ -1,0 +1,88 @@
+# SPIKE — not deployed anywhere. See the `measure-trip-wire-5` task.
+#
+# The question this exists to answer: is a reconciler better expressed as ONE general
+# interpreter (`processes/*.yml` + the stage engine) or as SEVERAL specific controllers?
+# `sweep-tasks` is the fair subject, because it is the job that already did NOT fit the
+# definition language — `doc/email-tasks.md` says so outright: "a task has two states, so
+# modelling one would mint a cycle per email and hand eleven-stage machinery to a boolean."
+#
+# Note what the spec is and is not. It is NOT a task, and there is no resource per email.
+# It is the RECONCILIATION POLICY: "the recorded task events should agree with this Gmail
+# label." Exactly the thing a controller is for — declared desired state, observed drift.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tasksweeps.aware.rods.me
+spec:
+  group: aware.rods.me
+  scope: Namespaced
+  names:
+    kind: TaskSweep
+    plural: tasksweeps
+    singular: tasksweep
+    shortNames: [tsw]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        # `status` as a subresource, so the controller writes it with its own RBAC verb and a
+        # `kubectl apply` of the spec can never clobber observed state. This is the mechanical
+        # half of the rule the spike is testing: STATUS IS OUTPUT, NEVER INPUT.
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [label, userId]
+              properties:
+                label:
+                  type: string
+                  description: The Gmail label the recorded events must agree with.
+                  minLength: 1
+                userId:
+                  type: string
+                  description: Aware's entity key. Never the task id.
+                  minLength: 1
+                lookbackDays:
+                  type: integer
+                  # The bound that keeps "closes on absence of evidence" honest: a task older
+                  # than the horizon is never closed. Shrinking this silently retires every
+                  # long-lived task at once, which is why it has a floor rather than just a
+                  # default (doc/email-tasks.md).
+                  minimum: 1
+                  maximum: 365
+                  default: 30
+                intervalSeconds:
+                  type: integer
+                  minimum: 60
+                  maximum: 86400
+                  default: 300
+                dryRun:
+                  type: boolean
+                  # TRUE FOR THE WHOLE SPIKE. The Argo `sweep-tasks` CronWorkflow is the sole
+                  # producer of `email_task_closed` in production; a second writer is precisely
+                  # the duplicate-close bug fixed on 2026-10-18. The spike observes and reports.
+                  default: true
+            status:
+              type: object
+              # Written by the controller, re-derived every pass. Nothing reads it to decide
+              # what to do — it exists so `kubectl get tasksweeps` is legible.
+              properties:
+                phase:
+                  type: string
+                  enum: [InSync, Drifted, Failed]
+                lastSweep: {type: string, format: date-time}
+                # `labelled` / `open` are deliberately absent — see the FINDING in
+                # controllers/task_sweep.py: SweepPlan carries only the difference, and
+                # widening it is a change to the thing being measured.
+                toOpen: {type: integer}
+                toClose: {type: integer}
+                message: {type: string}
+      additionalPrinterColumns:
+        - {name: Label, type: string, jsonPath: .spec.label}
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Drift, type: string, jsonPath: .status.message}
+        - {name: Last, type: date, jsonPath: .status.lastSweep}
