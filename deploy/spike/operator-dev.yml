@@ -1,0 +1,105 @@
+# SPIKE — the controller running IN the dev cluster, on its own timer.
+# Everything here is namespaced to `default` on development and nothing here goes near production.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: tasksweep-operator, namespace: default}
+---
+# CLUSTER-scoped, and only because kopf must resolve the CRD before it can watch instances of it.
+# `customresourcedefinitions` is a cluster-scoped resource, so a Role cannot grant it — this is the
+# smallest grant that works, not a convenience.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: tasksweep-operator-crd-read}
+rules:
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [get, list, watch]
+  # kopf 1.45 LISTS NAMESPACES CLUSTER-WIDE even when started with `--namespace default`, because
+  # it treats the value as a pattern and resolves it against the real set. Found by running it
+  # (2026-10-21): the operator retried `GET /api/v1/namespaces` nine times and never reached the
+  # resource it was scoped to. Read-only metadata, but it is a cluster-scoped grant that a
+  # namespaced operator would not obviously need — exactly the kind of thing the platform charges
+  # you that a CronWorkflow does not.
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: tasksweep-operator-crd-read}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: tasksweep-operator-crd-read}
+subjects:
+  - {kind: ServiceAccount, name: tasksweep-operator, namespace: default}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: tasksweep-operator, namespace: default}
+rules:
+  # The resource itself. `patch` on the object is for kopf's own progress annotations; the
+  # separate `tasksweeps/status` rule is what lets the controller write `.status` — the CRD
+  # declares status as a subresource, so the two are distinct permissions. That split is the
+  # mechanical half of "status is output, never input": the spec cannot be written by this role.
+  - apiGroups: [aware.rods.me]
+    resources: [tasksweeps]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [aware.rods.me]
+    resources: [tasksweeps/status]
+    verbs: [get, patch, update]
+  # kopf posts Kubernetes Events for handler outcomes, which is how `kubectl describe` explains
+  # a failing reconcile without reading pod logs.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+---
+# OMITTED ON THE FIRST APPLY (2026-10-21): the Role above existed and was bound to nobody, so it
+# granted exactly nothing. A Role without a RoleBinding is not a permission, it is a document.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: tasksweep-operator, namespace: default}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: tasksweep-operator}
+subjects:
+  - {kind: ServiceAccount, name: tasksweep-operator, namespace: default}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: tasksweep-operator, namespace: default}
+spec:
+  replicas: 1          # ONE. See the concurrency note below.
+  selector: {matchLabels: {app: tasksweep-operator}}
+  template:
+    metadata: {labels: {app: tasksweep-operator}}
+    spec:
+      serviceAccountName: tasksweep-operator
+      # Pinned to the worker ON PURPOSE: 64.111.99.60 is the address that was refused by MySQL's
+      # Allowable Hosts until 2026-10-21, so scheduling here is what proves the fix rather than
+      # avoiding it.
+      nodeName: k8s-west-node-1
+      restartPolicy: Always
+      containers:
+        - name: operator
+          image: python:3.13-slim
+          # A spike installs at start-up rather than baking an image: the reconciler image has no
+          # kopf, and building one would mean a registry push for a question we can answer in a
+          # pod. A real deployment would add `operator` to workers/reconciler/Dockerfile instead.
+          # Installed from GitHub's branch TARBALL, not git+https: this image has no git.
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              pip install --quiet --no-cache-dir \
+                kopf 'reconciler[operator] @ https://github.com/rodis/aware-reconciler/archive/refs/heads/operator-spike.tar.gz'
+              exec kopf run --standalone --namespace default \
+                -m reconciler.controllers.entrypoint --verbose
+          envFrom:
+            - secretRef: {name: reconciler-spike}     # 3 of 12 keys; dry-run paths only
+          env:
+            - {name: MYSQL_SSL_CA,     value: /etc/ssl/mysql/mysql-ca.pem}
+            - {name: RECONCILER_STORE, value: mysql}
+            - {name: AWARE_USER_ID,    value: rods}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+          volumeMounts:
+            - {name: ca, mountPath: /etc/ssl/mysql}
+      volumes:
+        - name: ca
+          configMap: {name: reconciler-mysql-ca}
