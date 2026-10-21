@@ -10,6 +10,8 @@ The one thing genuinely worth testing in the controller itself is the STATUS PRO
 that is where the design rule lives: status is output, never input.
 """
 
+import contextlib
+
 import pytest
 
 from reconciler.controllers import task_sweep
@@ -56,9 +58,15 @@ def test_the_phase_vocabulary_matches_the_crd_enum():
 
 
 def test_every_status_key_the_controller_writes_exists_in_the_crd():
-    """The structural schema prunes unknown fields silently — a typo'd key is not an error,
-    it just never appears. This is the first thing the platform gives us and the first way it
-    can bite, so it is pinned rather than trusted."""
+    """Unknown status keys are pruned, and that is operation-dependent — MEASURED on a real
+    cluster (k8s 1.34, 2026-10-21) rather than assumed:
+
+        apply  (spec)   unknown field -> REJECTED      (strict field validation, 1.25+)
+        patch  (status) unknown field -> warned, PRUNED, and the write still SUCCEEDS
+
+    kopf writes status by patching, so it lands in the second row: a key the CRD does not
+    declare is dropped and the controller reports success. Nothing else would catch that, which
+    is why this is pinned rather than trusted."""
     import pathlib
 
     import yaml
@@ -106,3 +114,49 @@ def test_the_lookback_floor_is_declared_not_defaulted_silently():
     spec = (crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]
             ["properties"]["spec"]["properties"]["lookbackDays"])
     assert spec["minimum"] >= 1 and spec["default"] == 30
+
+
+# --- the driver, exercised only when the extra is installed -------------------------------
+
+def test_register_attaches_a_timer_that_matches_the_crd():
+    """The one thing worth running kopf for: that the controller and the CRD agree.
+
+    They are two files that must name the same resource, and nothing else checks it — a typo
+    in either means the operator starts cleanly, watches a resource that does not exist, and
+    reports nothing wrong. That is the silent-stall shape again, so it gets a test.
+
+    Skipped without the `operator` extra, which is what keeps the CI contract intact: the
+    suite must pass with no third-party packages beyond the dev ones.
+    """
+    import pathlib
+
+    import yaml
+
+    kopf = pytest.importorskip("kopf", reason="needs the `operator` extra")
+
+    registry = kopf.OperatorRegistry()
+    with kopf.get_default_registry_or(registry) if hasattr(kopf, "get_default_registry_or") \
+            else _swap_default_registry(kopf, registry):
+        task_sweep.register()
+
+    handlers = list(registry._spawning.get_all_handlers())
+    assert len(handlers) == 1, "expected exactly one timer"
+    (handler,) = handlers
+
+    crd = yaml.safe_load(
+        (pathlib.Path(__file__).resolve().parents[1] / "deploy/crds/tasksweep.yml").read_text())
+    assert handler.selector.group == crd["spec"]["group"]
+    assert handler.selector.version == crd["spec"]["versions"][0]["name"]
+    assert handler.selector.any_name == crd["spec"]["names"]["plural"]
+    assert handler.id == "sweep", "a <locals> id would tie stored progress to the Python shape"
+
+
+@contextlib.contextmanager
+def _swap_default_registry(kopf, registry):
+    """kopf has no public "register into this registry" API across versions; swap and restore."""
+    previous = kopf.get_default_registry()
+    kopf.set_default_registry(registry)
+    try:
+        yield
+    finally:
+        kopf.set_default_registry(previous)

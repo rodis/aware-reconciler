@@ -65,16 +65,31 @@ def plan(spec: dict) -> tuple[int, int]:
     return len(sweep.to_open), len(sweep.to_close)
 
 
+def _now() -> str:
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+
+
 def _status(to_open: int, to_close: int) -> dict:
     drifted = bool(to_open or to_close)
     return {
         "phase": "Drifted" if drifted else "InSync",
-        "lastSweep": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "lastSweep": _now(),
         "toOpen": to_open,
         "toClose": to_close,
         "message": (f"{to_open} to open, {to_close} to close" if drifted
                     else "the label and the event log agree"),
     }
+
+
+def _failed(exc: Exception) -> dict:
+    """A failure is a status WITH A TIMESTAMP, found by running it (2026-10-21).
+
+    The first version wrote only phase and message, and `kubectl get` rendered an empty `LAST`
+    column — so "failed an hour ago" and "failing right now" looked identical. Stamping every
+    outcome is what makes the age of the last attempt readable, which is the whole reason the
+    column exists.
+    """
+    return {"phase": "Failed", "lastSweep": _now(), "message": str(exc)[:200]}
 
 
 def register() -> None:
@@ -87,7 +102,11 @@ def register() -> None:
     # every TaskSweep. Minor here (there would be one object), but it is a real way the
     # platform is less flexible than a CronWorkflow per schedule, and it belongs in the
     # comparison rather than in a footnote.
-    @kopf.timer(GROUP, VERSION, PLURAL, interval=300, initial_delay=10)
+    # `id=` is not cosmetic: kopf writes handler ids into the object's progress annotations,
+    # and the default for a nested function is `register.<locals>.reconcile`. That ties stored
+    # state to the shape of the Python, so renaming or un-nesting the function orphans the
+    # progress it already wrote. Name it once, explicitly.
+    @kopf.timer(GROUP, VERSION, PLURAL, id="sweep", interval=300, initial_delay=10)
     def reconcile(spec, patch, name, **_):
         try:
             to_open, to_close = plan(spec)
@@ -96,6 +115,6 @@ def register() -> None:
             # Record and let the next timer try: the sweep is a pure function, so there is no
             # partial state to unwind.
             log.warning("sweep %s failed: %s", name, exc)
-            patch.status.update({"phase": "Failed", "message": str(exc)[:200]})
+            patch.status.update(_failed(exc))
             return
         patch.status.update(_status(to_open, to_close))

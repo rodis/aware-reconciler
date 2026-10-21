@@ -40,6 +40,12 @@ dependencies = [
 # import-sorting, FURB/TRY/PLW rules that simply did not exist in the older default.
 # Pin until the rule set is chosen explicitly, which is its own change.
 dev = ["pytest>=8", "ruff>=0.15,<0.16"]
+# The controller spike (branch `operator-spike`). An EXTRA, not a base dep, for the same
+# reason `processes` is one: the Argo image invokes `reconciler.run` and never imports kopf,
+# so shipping aiohttp into it would pay for a driver it does not use. `controllers/task_sweep`
+# imports kopf lazily inside `register()`, so the suite collects and passes with this extra
+# absent — which is the CI contract the lazy psycopg/pymysql imports already serve.
+operator = ["kopf>=1.37"]
 # Prefect is the TIER 2 backstop only — one run per flow per day on different infrastructure.
 # `reconciler.flow` is the only module that imports it, and that module is deliberately not
 # copied into the Argo image: Argo invokes `reconciler.run`, the plain CLI. A new runner is a
