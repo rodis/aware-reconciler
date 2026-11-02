@@ -20,3 +20,9 @@ pymysql>=1.1
 pydantic>=2.6
 pyyaml
 python-dotenv
+# The operator runtime: the same image runs `kopf run -m reconciler.controllers.entrypoint` as a
+# Deployment (the Deployment supplies the command; ENTRYPOINT stays the CLI). PINNED EXACTLY,
+# not a range: the RBAC in the deploy manifests was found by running 1.45.1 — it lists namespaces
+# cluster-wide even when given `--namespace` — so a minor bump can change what permissions the
+# operator needs. Bump deliberately, alongside the RBAC.
+kopf==1.45.1
