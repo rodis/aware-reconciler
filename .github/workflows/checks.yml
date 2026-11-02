@@ -1,0 +1,40 @@
+# Lint, tests, and the generated process graph — on every PR, and reused by publish.yml so an
+# image is never built from a commit that fails them.
+name: Checks
+
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # `--locked`: the lockfile is the dependency list CI tests against. Without it uv would
+      # quietly re-resolve, and CI could pass on versions nobody committed.
+      # `--extra operator` so the controller tests run against kopf rather than skipping it.
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked --extra dev --extra operator
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Test (pytest)
+        run: uv run pytest
+
+      # `inference`'s CI diffs its copy of this file against ours, so a stale one here is
+      # drift between two repos that nothing else would catch.
+      - name: Process graph is up to date
+        run: |
+          uv run python scripts/emit_process_graph.py
+          git diff --exit-code contracts/ \
+            || { echo "::error::contracts/processes.json is stale — run 'python scripts/emit_process_graph.py' and commit"; exit 1; }
