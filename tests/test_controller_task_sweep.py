@@ -1,6 +1,6 @@
-"""SPIKE tests — `sweep-tasks` as a controller (see `measure-trip-wire-5` in the task vault).
+"""`sweep-tasks` as a controller — the production driver since 2026-11-02.
 
-These exist to prove one claim, which is the whole reason the spike is cheap: **the domain is
+These began as the spike's tests (`measure-trip-wire-5` in the task vault), proving one claim: **the domain is
 already testable without the driver.** Not one of them imports kopf, starts a cluster, or needs
 a CRD — exactly as the Argo entrypoint's tests do not import Argo. If a controller is a thin
 shell over `tasks.sweep`, then moving the driver costs the test suite nothing, and the 288
@@ -82,12 +82,7 @@ def test_every_status_key_the_controller_writes_exists_in_the_crd():
 
 # --- the guard that matters most ----------------------------------------------------------
 
-def test_the_spike_cannot_write(monkeypatch):
-    """The Argo CronWorkflow is the SOLE producer of `email_task_closed` (doc/email-tasks.md).
-    A second producer reading a store the first cannot see is the duplicate-close bug fixed on
-    2026-10-18. The spike must observe only, and `dry_run` is what enforces it — so assert the
-    option actually reaches the call rather than trusting the CRD default.
-    """
+def _capture(monkeypatch) -> dict:
     seen = {}
 
     def fake_sweep_tasks(*, label, user, lookback_days, options):
@@ -95,10 +90,50 @@ def test_the_spike_cannot_write(monkeypatch):
         return type("P", (), {"to_open": [], "to_close": []})()
 
     monkeypatch.setattr(task_sweep.app, "sweep_tasks", fake_sweep_tasks)
-    task_sweep.plan({"label": "aware/todo", "userId": "rods", "lookbackDays": 7})
+    return seen
 
-    assert seen["dry_run"] is True, "the spike would write to production"
+
+def test_an_object_that_does_not_ask_to_write_cannot(monkeypatch):
+    """There must be ONE producer of `email_task_closed` (doc/email-tasks.md); a second is the
+    duplicate-close bug fixed on 2026-10-18. So writing is opt-in: an object without
+    `dryRun: false` observes only — asserted at the call, not trusted to the CRD default,
+    because an object created before the default existed would have no field at all."""
+    seen = _capture(monkeypatch)
+    task_sweep.plan({"label": "aware/todo", "userId": "rods", "lookbackDays": 7})
     assert seen == {"label": "aware/todo", "user": "rods", "lookback": 7, "dry_run": True}
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_writes_follow_spec_dry_run(monkeypatch, dry_run):
+    seen = _capture(monkeypatch)
+    task_sweep.plan({"label": "aware/todo", "userId": "rods", "lookbackDays": 7, "dryRun": dry_run})
+    assert seen["dry_run"] is dry_run
+
+
+def test_a_pass_that_wrote_reads_differently_from_one_that_only_looked():
+    looked = task_sweep._status(1, 2, dry_run=True)["message"]
+    wrote = task_sweep._status(1, 2, dry_run=False)["message"]
+    assert "dry run" in looked and "dry run" not in wrote
+    assert wrote == "opened 1, closed 2"
+
+
+def test_the_production_object_matches_what_the_cronworkflow_ran():
+    """The object replaces the Argo `sweep-tasks` CronWorkflow, which ran the CLI's defaults.
+    The CRD's lookback default (30) is NOT the CLI's (365), and the sweep never closes a task
+    older than its horizon — so a production object that leaned on the CRD default would
+    silently stop closing every task between 30 and 365 days old."""
+    import pathlib
+
+    import yaml
+
+    from reconciler import tasks
+
+    obj = yaml.safe_load((pathlib.Path(__file__).resolve().parents[1]
+                          / "deploy/operator/tasksweep-aware-todo.yml").read_text())
+    spec = obj["spec"]
+    assert spec["label"] == tasks.DEFAULT_LABEL
+    assert spec["lookbackDays"] == tasks.DEFAULT_LOOKBACK_DAYS
+    assert spec["dryRun"] is False, "the production object is the sole writer"
 
 
 def test_the_lookback_floor_is_declared_not_defaulted_silently():

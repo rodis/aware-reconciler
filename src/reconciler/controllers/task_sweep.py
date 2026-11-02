@@ -1,24 +1,24 @@
-"""SPIKE — `sweep-tasks` as a Kubernetes controller rather than a CronWorkflow entrypoint.
+"""`sweep-tasks` as a Kubernetes controller — the production driver since 2026-11-02.
 
 Read `deploy/crds/tasksweep.yml` first; it carries the why. This module is the other half,
-and it is deliberately TINY. That is the measurement: if expressing a reconciler as a
-controller takes a page, the platform is carrying the infrastructure and the extension point
-can move from "the definition language" to "a new controller".
+and it is deliberately TINY: the domain lives in `tasks.sweep`, which already takes its ports
+injected and returns a plan, so the controller only decides when to run it and where to
+report.
 
 **The package is `controllers`, not `operator`.** `operator` is a stdlib module and a package
 of that name shadows it on `sys.path` — a failure that shows up far from its cause.
 
 **kopf is imported lazily**, inside the function, for the same reason `adapters/mysql.py`
-imports pymysql lazily: CI installs the project and runs the suite with no operator extra, and
-a module-scope `import kopf` would break collection of tests that never touch Kubernetes.
+imports pymysql lazily: CI runs the suite without requiring kopf, and a module-scope
+`import kopf` would break collection of tests that never touch Kubernetes.
 
-What this does NOT do, on purpose:
+Two rules:
 
-- **It never writes.** `dryRun` defaults to true in the CRD and `plan()` below is
-  `app.sweep_tasks(options=RunOptions(dry_run=True))`. The Argo `sweep-tasks` CronWorkflow is
-  the SOLE producer of `email_task_closed` in production (doc/email-tasks.md, since
-  2026-10-13); a second producer reading a store the first cannot see is exactly the
-  duplicate-close bug fixed on 2026-10-18. The spike reports drift, it does not repair it.
+- **Writes follow `spec.dryRun`, and a missing field means dry-run.** The CRD defaults it to
+  true and so does `plan()`, so an object that does not say `dryRun: false` observes only.
+  There must be exactly ONE producer of `email_task_closed` (the duplicate-close bug fixed on
+  2026-10-18): the production object turned writes on in the same change that removed the
+  Argo `sweep-tasks` CronWorkflow from `inference`.
 - **It never reads `.status` to decide.** The timer is unconditional. The tempting
   optimisation — `when=lambda status: status.get('phase') != 'InSync'` — would make a wrong
   status permanent, which is the silent stall this tier exists to avoid. Reconciling an
@@ -40,9 +40,10 @@ GROUP, VERSION, PLURAL = "aware.rods.me", "v1", "tasksweeps"
 
 
 def plan(spec: dict) -> tuple[int, int]:
-    """Observe the drift. Two reads, no writes.
+    """One sweep. Two reads, and — only when `spec.dryRun` is false — the writes that repair the
+    drift (`tasks.sweep` emits them itself).
 
-    Returns `(to_open, to_close)`. This is the whole domain contribution of the controller, and
+    Returns `(to_open, to_close)`: what was found, and therefore what was written unless dry. This is the whole domain contribution of the controller, and
     the fact that it is one call is the point: `tasks.sweep` already takes its ports injected
     and RETURNS a plan rather than performing it (`SweepPlan` — "returned rather than
     performed, so it can be printed"). The CLI prints it; a controller puts it in `.status`.
@@ -60,7 +61,8 @@ def plan(spec: dict) -> tuple[int, int]:
         label=spec["label"],
         user=spec["userId"],
         lookback_days=spec.get("lookbackDays", 30),
-        options=RunOptions(dry_run=True),       # the guard, restated where it is enforced
+        # `True` when absent, matching the CRD default: writing must be asked for explicitly.
+        options=RunOptions(dry_run=spec.get("dryRun", True)),
     )
     return len(sweep.to_open), len(sweep.to_close)
 
@@ -69,15 +71,22 @@ def _now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
 
 
-def _status(to_open: int, to_close: int) -> dict:
+def _status(to_open: int, to_close: int, *, dry_run: bool = True) -> dict:
+    """`Drifted` means this pass FOUND drift. With writes on it also repaired it, and the
+    message says which — so a pass that wrote reads differently from one that only looked."""
     drifted = bool(to_open or to_close)
+    if not drifted:
+        message = "the label and the event log agree"
+    elif dry_run:
+        message = f"{to_open} to open, {to_close} to close (dry run, nothing written)"
+    else:
+        message = f"opened {to_open}, closed {to_close}"
     return {
         "phase": "Drifted" if drifted else "InSync",
         "lastSweep": _now(),
         "toOpen": to_open,
         "toClose": to_close,
-        "message": (f"{to_open} to open, {to_close} to close" if drifted
-                    else "the label and the event log agree"),
+        "message": message,
     }
 
 
@@ -117,4 +126,4 @@ def register() -> None:
             log.warning("sweep %s failed: %s", name, exc)
             patch.status.update(_failed(exc))
             return
-        patch.status.update(_status(to_open, to_close))
+        patch.status.update(_status(to_open, to_close, dry_run=spec.get("dryRun", True)))

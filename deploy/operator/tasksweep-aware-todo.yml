@@ -1,0 +1,23 @@
+# THE production sweep: the `aware/todo` Gmail label against the recorded task events. Replaces
+# the Argo `sweep-tasks` CronWorkflow in `inference`, which is removed in the same change —
+# never two producers of `email_task_closed`.
+#
+# Every field stated rather than defaulted, matching what the CronWorkflow ran (the CLI's
+# defaults): lookback 365 days (the CRD's default is 30, and the sweep never closes a task older
+# than its horizon, so 30 would silently stop closing older tasks), every 5 minutes (fixed in
+# the controller's timer; the field is documentation until the timer reads it).
+apiVersion: aware.rods.me/v1
+kind: TaskSweep
+metadata:
+  name: aware-todo
+  namespace: aware-reconciler
+  annotations:
+    # On a fresh cluster the CRD and this object arrive in the same sync; without this Argo CD's
+    # dry run rejects the object because its kind does not exist yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  label: aware/todo
+  userId: rods
+  lookbackDays: 365
+  intervalSeconds: 300
+  dryRun: false

@@ -17,6 +17,7 @@ resources:
   - operator/rbac.yml
   - operator/doppler-secret.yml
   - operator/deployment.yml
+  - operator/tasksweep-aware-todo.yml
 
 # The image tag is pinned here, on deploy-state only, by .github/workflows/publish.yml.
 # `sha-bootstrap` on main is a placeholder that never deploys: Argo CD tracks deploy-state.
