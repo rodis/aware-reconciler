@@ -20,9 +20,10 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/aware-reconciler
-  # Where the tag is pinned. Written in the next step of the work (the deploy files); until it
-  # exists this workflow still builds and still mirrors main to deploy-state, and says so.
-  KUSTOMIZATION: deploy/operator/kustomization.yml
+  # Where the tag is pinned: the one kustomization Argo CD renders. At deploy/'s root rather
+  # than in deploy/operator/ because kustomize refuses files outside its own root, and the CRD
+  # and the MySQL CA live in sibling folders.
+  KUSTOMIZATION: deploy/kustomization.yml
 
 jobs:
   checks:
@@ -98,4 +99,7 @@ jobs:
             git commit -am "deploy: aware-reconciler @ sha-${GITHUB_SHA:0:7}" \
               --trailer "Code-Commit:${GITHUB_SHA}"
           fi
-          git push --force origin HEAD:deploy-state
+          # FULL refname: the checkout is a detached HEAD, and git only guesses `refs/heads/` for
+          # a destination branch that already exists. The first run, which creates
+          # deploy-state, failed on exactly this (2026-11-02).
+          git push --force origin HEAD:refs/heads/deploy-state

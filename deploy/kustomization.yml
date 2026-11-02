@@ -1,0 +1,34 @@
+# The aware-reconciler operator — the ONE kustomization Argo CD renders (app path: `deploy`).
+#
+# At deploy/'s root because kustomize refuses to read files outside its own root, and the CRD
+# (deploy/crds/) and the MySQL CA (deploy/kustomize/base/reconciler/) live in sibling folders
+# that tests read in place.
+#
+# deploy/kustomize/base/reconciler/ is NOT rendered here: it is the CronWorkflow deploy copied
+# from `inference` at the split. Production still runs that copy from `inference` itself; it is
+# removed when `sweep-tasks` moves to this operator.
+#
+# No top-level `namespace:` on purpose. The DopplerSecret must live in doppler-operator-system,
+# and a global namespace transform would move it into ours, where the Doppler operator never
+# looks. Every resource states its own namespace instead.
+resources:
+  - operator/namespace.yml
+  - crds/tasksweep.yml
+  - operator/rbac.yml
+  - operator/doppler-secret.yml
+  - operator/deployment.yml
+
+# The image tag is pinned here, on deploy-state only, by .github/workflows/publish.yml.
+# `sha-bootstrap` on main is a placeholder that never deploys: Argo CD tracks deploy-state.
+images:
+  - name: ghcr.io/rodis/aware-reconciler
+    newTag: sha-bootstrap
+
+# The MySQL server's CA. Public — a CA certificate carries no private key. A content-hashed
+# name is fine here (unlike in `inference`, where an Argo WorkflowTemplate consumed it): the
+# consumer is a Deployment, so kustomize rewrites the reference, and a rotated CA rolls the pod.
+configMapGenerator:
+  - name: reconciler-mysql-ca
+    namespace: aware-reconciler
+    files:
+      - mysql-ca.pem=kustomize/base/reconciler/mysql-ca.pem

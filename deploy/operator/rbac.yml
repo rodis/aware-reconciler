@@ -1,0 +1,70 @@
+# What kopf 1.45.1 needs to run TaskSweep in one namespace. Found by running it on the dev
+# cluster (2026-10-21), not from documentation — re-check if the kopf pin moves.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aware-reconciler
+  namespace: aware-reconciler
+---
+# Cluster-scoped, and only because it must be:
+# - CRDs are cluster-scoped, and kopf resolves the CRD before it watches its objects.
+# - kopf LISTS NAMESPACES CLUSTER-WIDE even with `--namespace`, because it treats the value as
+#   a pattern and matches it against the real set.
+# Both read-only metadata.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aware-reconciler-discovery
+rules:
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aware-reconciler-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aware-reconciler-discovery
+subjects:
+  - kind: ServiceAccount
+    name: aware-reconciler
+    namespace: aware-reconciler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aware-reconciler
+  namespace: aware-reconciler
+rules:
+  # `patch` on the object is for kopf's own progress annotations. `.status` is a subresource
+  # with its own grant, so this role can write status but never change a spec.
+  - apiGroups: [aware.rods.me]
+    resources: [tasksweeps]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [aware.rods.me]
+    resources: [tasksweeps/status]
+    verbs: [get, patch]
+  # kopf posts Events for handler outcomes, so `kubectl describe` explains a failing pass.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aware-reconciler
+  namespace: aware-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aware-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: aware-reconciler
+    namespace: aware-reconciler

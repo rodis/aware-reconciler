@@ -1,4 +1,4 @@
-# SPIKE — not deployed anywhere. See the `measure-trip-wire-5` task.
+# Deployed by deploy/kustomization.yml since 2026-11-02 (it began as the 2026-10-21 spike, task `measure-trip-wire-5`).
 #
 # The question this exists to answer: is a reconciler better expressed as ONE general
 # interpreter (`processes/*.yml` + the stage engine) or as SEVERAL specific controllers?
