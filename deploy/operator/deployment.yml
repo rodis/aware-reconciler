@@ -1,0 +1,61 @@
+# The operator. With no TaskSweep object in the namespace it watches and does nothing — the
+# object, with writes on, arrives in the same change that removes `sweep-tasks` from `inference`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aware-reconciler
+  namespace: aware-reconciler
+spec:
+  # ONE, and Recreate rather than RollingUpdate. kopf runs `--standalone` (no peering, no
+  # leader election), so two pods would both reconcile: a rolling update would briefly run two
+  # sweeps, which once writes are on means two producers of `email_task_closed`.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: aware-reconciler}
+  template:
+    metadata:
+      labels: {app: aware-reconciler}
+    spec:
+      serviceAccountName: aware-reconciler
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: operator
+          image: ghcr.io/rodis/aware-reconciler
+          # The image's ENTRYPOINT is the reconciler CLI; the operator is the same image with a
+          # different command.
+          command:
+            - kopf
+            - run
+            - --standalone
+            - --namespace=aware-reconciler
+            - --liveness=http://0.0.0.0:8080/healthz
+            - -m
+            - reconciler.controllers.entrypoint
+          ports:
+            - {name: health, containerPort: 8080}
+          # kopf's own health endpoint: fails if the operator's event loop stops, not if a sweep
+          # fails (a failed sweep is a `Failed` status, by design).
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          envFrom:
+            - secretRef:
+                name: reconciler-credentials
+          env:
+            - {name: RECONCILER_STORE, value: mysql}
+            - {name: MYSQL_SSL_CA, value: /etc/ssl/mysql/mysql-ca.pem}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+          volumeMounts:
+            - {name: mysql-ca, mountPath: /etc/ssl/mysql, readOnly: true}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: mysql-ca
+          configMap:
+            name: reconciler-mysql-ca
