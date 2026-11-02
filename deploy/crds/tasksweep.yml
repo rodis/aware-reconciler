@@ -62,9 +62,11 @@ spec:
                   default: 300
                 dryRun:
                   type: boolean
-                  # TRUE FOR THE WHOLE SPIKE. The Argo `sweep-tasks` CronWorkflow is the sole
-                  # producer of `email_task_closed` in production; a second writer is precisely
-                  # the duplicate-close bug fixed on 2026-10-18. The spike observes and reports.
+                  # Defaults to TRUE: writing must be asked for. There must be exactly one
+                  # producer of `email_task_closed` (a second writer is the duplicate-close bug
+                  # fixed on 2026-10-18), so an object observes only unless it says
+                  # `dryRun: false`. The production object does, since the Argo `sweep-tasks`
+                  # CronWorkflow was removed.
                   default: true
             status:
               type: object

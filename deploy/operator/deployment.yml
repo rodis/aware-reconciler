@@ -1,5 +1,4 @@
-# The operator. With no TaskSweep object in the namespace it watches and does nothing — the
-# object, with writes on, arrives in the same change that removes `sweep-tasks` from `inference`.
+# The operator. It reconciles the TaskSweep objects in this namespace (tasksweep-aware-todo.yml).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
