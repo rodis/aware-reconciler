@@ -1,0 +1,35 @@
+# The aware-reconciler Argo CD app. Registered ONCE by hand — it is not rendered by
+# deploy/kustomization.yml, so nothing here manages itself:
+#
+#   kubectl apply -f deploy/argocd/application.yml
+#
+# Tracks deploy-state, never main: publish.yml writes deploy-state as main's tree with the
+# image tag pinned to the commit it just built.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aware-reconciler
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/rodis/aware-reconciler.git
+    targetRevision: deploy-state
+    path: deploy
+
+  # The app's own namespace. The DopplerSecret in doppler-operator-system and the cluster-scoped
+  # CRD and RBAC state their own placement, so this is only the default.
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: aware-reconciler
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
