@@ -1,0 +1,80 @@
+# Process — one object per `processes/*.yml` definition (task `process-controller`).
+#
+# The spec names a DEFINITION; the definition carries the process (stages, schedule, rate). The
+# controller opens the cycle the definition's schedule owes — idempotent by worked period — and
+# advances every open cycle. Replaces Argo's `advance-cycles` and Prefect's opener.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: processes.aware.rods.me
+spec:
+  group: aware.rods.me
+  scope: Namespaced
+  names:
+    kind: Process
+    plural: processes
+    singular: process
+    shortNames: [proc]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [definition]
+              properties:
+                definition:
+                  type: string
+                  description: The `name:` of a definition in processes/*.yml.
+                  pattern: '^[a-z][a-z0-9_]*$'
+                timezone:
+                  type: string
+                  description: The zone the definition's scheduled opener is read in.
+                  default: Europe/Zurich
+                openScheduled:
+                  type: boolean
+                  description: Whether this controller opens the cycles the schedule owes.
+                  default: true
+                dryRun:
+                  type: boolean
+                  # TRUE unless the object says otherwise: a process sends mail and invoices.
+                  default: true
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Idle, Waiting, Advanced, Opening, Opened, Failed]
+                lastPass: {type: string, format: date-time}
+                message: {type: string}
+                complete: {type: integer}
+                open:
+                  type: object
+                  properties:
+                    key: {type: string}
+                    period:
+                      type: object
+                      properties:
+                        start: {type: string}
+                        end: {type: string}
+                cycles:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key: {type: string}
+                      status: {type: string}
+                      message: {type: string}
+                      advanced: {type: array, items: {type: string}}
+                      waitingOn: {type: array, items: {type: string}}
+      additionalPrinterColumns:
+        - {name: Definition, type: string, jsonPath: .spec.definition}
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Status, type: string, jsonPath: .status.message}
+        - {name: Last, type: date, jsonPath: .status.lastPass}

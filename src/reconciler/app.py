@@ -32,7 +32,7 @@ from reconciler.adapters.mysql import MysqlMilestones, MysqlTasks, MysqlWriter
 from reconciler.adapters.neon import NeonMilestones, NeonTasks
 from reconciler.core import Cycle, Milestone, MilestoneStore, Outcome, reconcile
 from reconciler.definition import GENESIS_STAGE, ProcessDefinition, load_definitions
-from reconciler import purge, tasks
+from reconciler import purge, schedule, tasks
 from reconciler.tasks import TASK_INGEST_APP
 from reconciler.finder import SignalFinder
 from reconciler.recording import (
@@ -455,6 +455,44 @@ def advance(process: str, *, cycle_key: str | None = None,
                                            store.milestones(definition, cycle),
                                            options, sink)))
     return results
+
+
+@dataclass
+class ProcessPass:
+    """One `Process` controller pass: what it opened (or would) and where each cycle stands."""
+
+    process: str
+    due_period: dict | None
+    opened: Cycle | None
+    results: list[tuple[Cycle, Outcome | None]]
+
+
+def run_process(process: str, *, tz: str = "Europe/Zurich", open_scheduled: bool = True,
+                options: RunOptions | None = None,
+                now: datetime | None = None) -> ProcessPass:
+    """Open the cycle the schedule owes (if any, and if none exists for its period), then advance.
+
+    The `Process` controller's whole job, and two existing acts in the order a month needs:
+    `open_cycle` for genesis and `advance` for everything after. Opening is idempotent BY PERIOD
+    (`schedule.has_cycle_for`), which is what lets a timer replace Prefect's once-a-month cron —
+    see `reconciler.schedule`.
+
+    In a dry run nothing is recorded, so a cycle that WOULD be opened is not in the store for
+    `advance` to see; `opened` carries it so the caller can report it.
+    """
+    from zoneinfo import ZoneInfo
+
+    options = options or RunOptions()
+    definition = definition_named(process, options.processes_dir)
+    due = None
+    opened = None
+    cron = schedule.scheduled_cron(definition.opens) if open_scheduled else None
+    if cron:
+        due = schedule.due_period(cron, now or datetime.now(UTC), ZoneInfo(tz))
+        if due and not schedule.has_cycle_for(milestone_store().cycles(definition), due):
+            opened = open_cycle(process, period=due, options=options)
+    return ProcessPass(process=definition.name, due_period=due, opened=opened,
+                       results=advance(process, options=options))
 
 
 def walk_fresh(process: str, cycle: Cycle, *,
