@@ -1,6 +1,7 @@
-# The monthly DreamHost invoice. DRY RUN until the swap: Argo's `advance-cycles` (in `inference`)
-# still advances from MySQL with the old 96/h image, and Prefect is paused. Writes go on in the
-# same change that removes `advance-cycles`, and that pass opens dh_invoice_2026_011 fresh at 98/h.
+# The monthly DreamHost invoice. Writes ON since 2026-11-03, after Argo's `advance-cycles` was
+# suspended and Prefect paused — this is the only thing that opens or advances it. The first pass
+# opened dh_invoice_2026_011 (October 2026's work) fresh at 98/h; the dry run previewed 22 days,
+# USD 17,248.00.
 apiVersion: aware.rods.me/v1
 kind: Process
 metadata:
@@ -12,4 +13,4 @@ spec:
   definition: dreamhost_invoice
   timezone: Europe/Zurich
   openScheduled: true
-  dryRun: true
+  dryRun: false
