@@ -110,7 +110,7 @@
           "after": [
             "invoice_approved"
           ],
-          "detail": "classify: accounting@example.com",
+          "detail": "classify: accounting@dreamhost.com",
           "event": "dreamhost_invoice_payment_submitted"
         },
         {
@@ -120,7 +120,7 @@
           "after": [
             "payment_submitted"
           ],
-          "detail": "classify: accounting@example.com",
+          "detail": "classify: accounting@dreamhost.com",
           "event": "dreamhost_invoice_payment_processed"
         }
       ],

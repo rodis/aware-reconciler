@@ -26,18 +26,14 @@ stages:
     kind: act
     action: lines.worked_days
     config:
-      # PLACEHOLDER. The real rate is commercial information and is not in this public repo;
-      # the deployed definition carries it. `lines.worked_days` treats `day_rate` as required
-      # and never defaults it, so a wrong number here produces a wrong invoice rather than an
-      # error — check it before pointing a real cycle at this file.
-      day_rate: 800        # 100/h x 8h
+      day_rate: 784        # 98/h x 8h (96 -> 98 from the invoice for October 2026's work, dh_invoice_2026_011)
       hours_per_day: 8
 
   # Its own stage, not bookkeeping: without a recorded `approval_requested` the reconciler
   # re-sends this email every single day until answered.
   # `currency` is stated on EVERY money-rendering stage, not just the ones that compute a
   # total. It was missing here and on `invoice_emailed`, and the default in
-  # `actions/notify.py` is EUR — so the approval mail a human reads showed "EUR 12,000.00"
+  # `actions/notify.py` is EUR — so the approval mail a human reads showed "EUR 16,128.00"
   # while the PDF said USD. Same digits, different symbol, on the one document whose entire
   # job is to be checked by a person before the invoice is real.
   - name: approval_requested
@@ -97,9 +93,9 @@ stages:
     after: [total_computed]
     action: craftmypdf.render
     config:
-      template_id: REPLACE_ME             # the CraftMyPDF template this renders into
+      template_id: fc677b23e92ad700     # "Inv. n. 2 - The DreamHost, Inc."
       currency: USD
-      rate_per_hour: 100               # PLACEHOLDER, as in `computed_lines` above
+      rate_per_hour: 98
       worked_item_name: Amount          # the computed line prints as a bare "Amount"
       # Printed verbatim. The invoice is dated to the LAST DAY OF THE WORKED PERIOD, not to
       # whenever it is rendered — so a re-run weeks later prints the same date it replaced.
@@ -159,7 +155,7 @@ stages:
     after: [invoice_approved]
     signal:
       source: classify
-      from: accounting@example.com
+      from: accounting@dreamhost.com
       mentions: invoice_number
       classify: >-
         Does this email announce that a payment has been INITIATED — set in motion, submitted
@@ -174,7 +170,7 @@ stages:
     after: [payment_submitted]
     signal:
       source: classify
-      from: accounting@example.com
+      from: accounting@dreamhost.com
       mentions: invoice_number
       classify: >-
         Is this email confirming that a payment already sent has now COMPLETED — processed,
