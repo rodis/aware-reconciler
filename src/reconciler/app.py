@@ -18,7 +18,7 @@ from datetime import UTC, date, datetime, timedelta
 from reconciler.actions import Services
 from reconciler.adapters.craftmypdf import CraftMyPdf
 from reconciler.adapters.gateway import DryRunMilestones, GatewayMilestones
-from reconciler.adapters.gmail import N8nGmailQuery
+from reconciler.adapters.gmail import N8nGmailMetadataQuery, N8nGmailQuery
 from reconciler.adapters.llm import N8nGeminiRelay
 from reconciler.adapters.mail import (
     ConsoleMailer,
@@ -300,6 +300,18 @@ def sweep_tasks(*, label: str = tasks.DEFAULT_LABEL, user: str | None = None,
         lookback_days=lookback_days,
     )
 
+def purge_query() -> N8nGmailMetadataQuery:
+    """The headers-only search the purge selects with (see `N8nGmailMetadataQuery`)."""
+    url = os.environ.get("GMAIL_SEARCH_LIGHT_URL")
+    if not url:
+        raise ConfigurationError("GMAIL_SEARCH_LIGHT_URL is not set")
+    return N8nGmailMetadataQuery(
+        url=url,
+        token=os.environ["MAIL_RELAY_TOKEN"],
+        header=os.environ.get("MAIL_RELAY_HEADER", "X-Relay-Token"),
+    )
+
+
 def trash_relay() -> N8nTrashRelay | None:
     """The trash relay, or None when `GMAIL_TRASH_URL` is unset.
 
@@ -328,7 +340,7 @@ def purge_senders(*, senders: list[str], tz: str = "Europe/Zurich",
     if trasher is None and not options.dry_run:
         raise ConfigurationError("GMAIL_TRASH_URL is not set (use dry_run to preview)")
     return purge.purge(
-        source=task_query(),
+        source=purge_query(),
         trasher=trasher,
         senders=senders,
         now=now or datetime.now(UTC),
