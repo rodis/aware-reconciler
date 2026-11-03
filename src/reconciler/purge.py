@@ -14,14 +14,19 @@ a desired state the cutoff is a pure function of the clock, so the controller is
 a missed pass is caught by the next one, a doubled pass finds nothing, and nothing has to
 remember when it last ran.
 
-**Every guard only ever KEEPS more mail.** Gmail's search does the selection (`from:` plus
-`before:<epoch>`), and then two checks here refuse anything the search let through that the rule
+**Inbox only** (owner, 2026-11-03): the purge exists so these senders need no handling at all,
+so anything that has left the inbox — archived, labelled, filed by hand — is someone's deliberate
+choice and is never touched.
+
+**Every guard only ever KEEPS more mail.** Gmail's search does the selection (`in:inbox`,
+`from:`, `before:<epoch>`), and then two checks here refuse anything the search let through that the rule
 does not cover:
 
 - the sender must equal a listed address EXACTLY — Gmail's `from:` also matches display names
   and substrings;
-- the mail's own time must be before the cutoff too — `before:` uses Gmail's received time, the
-  `Date` header is the sender's, and the purge acts only when both agree it is old.
+- the mail's own time must be before the cutoff too — re-checked on the time the search
+  reports (Gmail's `internalDate` since the metadata search), so the purge never relies on the
+  query string alone.
 
 Like `tasks.sweep`, this takes its ports injected and returns a plan, so the controller only
 decides when to run it and where to report.
@@ -60,7 +65,7 @@ def cutoff(now: datetime, tz: tzinfo, min_age: timedelta = DEFAULT_MIN_AGE) -> d
 
 
 class MailSource(Protocol):
-    """`adapters.gmail.N8nGmailQuery` — the same client the sweep and the invoice use."""
+    """`adapters.gmail.N8nGmailMetadataQuery` — headers only, never bodies."""
 
     def candidates(self, signal: dict, since: int) -> list[tuple[int, dict]]:
         ...
@@ -100,7 +105,7 @@ def purge(*, source: MailSource, trasher: Trasher, senders: list[str], now: date
     for sender in sorted(listed):
         # One more than the cap, so "exactly the cap" and "more than the cap" can be told apart.
         found = source.candidates(
-            {"q": f"from:{sender} before:{edge_epoch}", "limit": max_per_run + 1}, since)
+            {"q": f"in:inbox from:{sender} before:{edge_epoch}", "limit": max_per_run + 1}, since)
         for when, mail in found:
             uid = mail.get("upstream_id")
             if not uid or uid in seen:

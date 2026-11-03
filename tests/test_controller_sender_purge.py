@@ -94,7 +94,10 @@ def test_the_production_object_is_pinned():
     """Writes went on 2026-11-03, after the dry-run preview matched Gmail. Pinned so a change to
     who is purged, how soon, or whether it writes is always a visible test change."""
     assert OBJECT["spec"]["dryRun"] is False
-    assert OBJECT["spec"]["senders"] == ["mftradingguide@class.it"]
+    assert OBJECT["spec"]["senders"] == ["mftradingguide@class.it",
+                                         "jobalerts-noreply@linkedin.com",
+                                         "newslettermf@class.it",
+                                         "noreply@class.it"]
     assert OBJECT["spec"]["minAgeHours"] == 12
 
 

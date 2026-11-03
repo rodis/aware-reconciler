@@ -115,7 +115,15 @@ def test_the_search_carries_the_cutoff_as_epoch_seconds():
     """Gmail's date operators do not follow Europe/Zurich; epoch seconds are exact."""
     _, source, _ = run([])
     (signal,) = source.asked
-    assert signal["q"] == f"from:mftradingguide@class.it before:{int(at('2026-11-03 00:00').timestamp())}"
+    assert signal["q"] == ("in:inbox from:mftradingguide@class.it "
+                           f"before:{int(at('2026-11-03 00:00').timestamp())}")
+
+
+def test_the_search_never_leaves_the_inbox():
+    """Owner, 2026-11-03: mail that has left the inbox was handled by hand, so it is never
+    touched. Asserted on every query, for every sender."""
+    _, source, _ = run([], senders=["a@b.c", "d@e.f"])
+    assert all(s["q"].startswith("in:inbox ") for s in source.asked)
 
 
 def test_only_an_exact_sender_is_trashed():
@@ -168,7 +176,7 @@ def test_one_message_found_by_two_senders_counts_once():
 def test_blank_senders_are_ignored_not_searched():
     """`from:` with nothing after it would match every mail in the box."""
     _, source, _ = run([], senders=["mftradingguide@class.it", "  ", ""])
-    assert [s["q"].split()[0] for s in source.asked] == ["from:mftradingguide@class.it"]
+    assert [s["q"].split()[1] for s in source.asked] == ["from:mftradingguide@class.it"]
 
 
 def test_now_in_utc_gives_the_same_cutoff():

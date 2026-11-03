@@ -89,8 +89,11 @@ class N8nGmailQuery:
     Retries, unlike an `await`. This is the distinction the whole tier turns on: a stage that
     has not happened yet must NOT be retried — that is the wait-as-retry mistake the prior art
     made. A transport error is different in kind: nothing was learned, so asking again is
-    correct rather than a stall in disguise. Observed 2026-08-16, this instance's egress to
-    Google times out at ~20s on roughly two calls in three and answers in ~1.1s otherwise.
+    correct rather than a stall in disguise. Observed 2026-08-16: calls failing at ~20s on
+    roughly two in three, ~1.1s otherwise. That was once read as this instance's egress to
+    Google; it is not (corrected 2026-11-03) — it is an n8n queue-mode WORKER whose Postgres
+    pool has died, which keeps pulling jobs and times each one out. See ADR 0012 and the
+    `n8n-worker-liveness` task.
 
     The mail relay deliberately does NOT retry — see `adapters.mail`.
     """
@@ -147,3 +150,62 @@ class N8nGmailQuery:
                                attempt, self._attempts, last)
                 time.sleep(2 ** (attempt - 1))
         raise last
+
+
+def normalise_metadata(message: dict) -> dict:
+    """One item from the metadata-only search (`simple: true`) into the same flat shape.
+
+    That relay returns headers as top-level strings — `From: "Name <addr>"` — rather than
+    mailparser's object, so the address is parsed with the stdlib here.
+    """
+    from email.utils import parseaddr
+
+    name, address = parseaddr(message.get("From") or "")
+    return {
+        "upstream_id": message.get("id"),
+        "gmail_thread_id": message.get("threadId"),
+        "subject": message.get("Subject") or "",
+        "from": address,
+        "from_name": name,
+        "from_domain": address.split("@")[-1].lower() if "@" in address else "",
+        "snippet": " ".join(str(message.get("snippet") or "").split())[:1000],
+    }
+
+
+def metadata_time(message: dict) -> int:
+    """Gmail's own received time (`internalDate`, epoch ms), not the sender's `Date` header."""
+    try:
+        return int(message.get("internalDate") or 0) // 1000
+    except (TypeError, ValueError):
+        return 0
+
+
+class N8nGmailMetadataQuery(N8nGmailQuery):
+    """The search, headers only (`Query: gmail search (metadata only)`, iIP1BGn5AziwmFOa).
+
+    For callers that select messages rather than read them. The full search returns every body,
+    and in n8n's queue mode each response is carried worker -> webhook THROUGH REDIS: on
+    2026-11-03 a preview of 100-501 LinkedIn mails OOM-killed that Redis and took all of n8n down
+    with it. Metadata is ~800 bytes a message instead of ~110 KB.
+
+    Same request, same retries (inherited `_ask`); only the parsing differs.
+    """
+
+    def candidates(self, signal: dict, since: int) -> list[tuple[int, dict]]:
+        body = {
+            "q": build_query(signal),
+            "received_after": datetime.fromtimestamp(since, UTC).isoformat(),
+            "limit": signal.get("limit", self._limit),
+        }
+        request = urllib.request.Request(
+            self._url,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", self._header: self._token},
+            method="POST",
+        )
+        payload = self._ask(request)
+        messages = payload if isinstance(payload, list) else payload.get("data", [])
+        found = [(metadata_time(m), normalise_metadata(m)) for m in messages if m.get("id")]
+        found.sort(key=lambda pair: pair[0])
+        logger.info("gmail metadata query %r -> %d candidate(s)", body["q"], len(found))
+        return found

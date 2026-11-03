@@ -51,6 +51,9 @@ spec:
             - {name: PYTHONUNBUFFERED, value: "1"}
             # The SenderPurge trash relay (n8n `Relay: gmail trash`, QqDX8ib4qXWFgysC). Plain config,
             # not a secret: the URL alone does nothing, the relay requires MAIL_RELAY_TOKEN.
+            # The SenderPurge search: headers only (n8n `Query: gmail search (metadata only)`,
+            # iIP1BGn5AziwmFOa). Never the full search here — its bodies OOM-killed n8n's Redis.
+            - {name: GMAIL_SEARCH_LIGHT_URL, value: "https://n8n.prod.rods.me/webhook/106884c9-89dc-4a24-b93a-cfaec11f3e51"}
             - {name: GMAIL_TRASH_URL, value: "https://n8n.prod.rods.me/webhook/ca985ed4-0d2b-42fe-a7e7-9a7ba5318d80"}
           volumeMounts:
             - {name: mysql-ca, mountPath: /etc/ssl/mysql, readOnly: true}

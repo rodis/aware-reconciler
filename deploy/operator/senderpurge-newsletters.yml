@@ -12,6 +12,12 @@ metadata:
 spec:
   senders:
     - mftradingguide@class.it
+    # Added 2026-11-03. Preview, inbox only, before the cutoff: LinkedIn 200+ (back to
+    # 2026-06-29), newslettermf 51, noreply@class.it 0. At maxPerRun 100 LinkedIn's backlog
+    # drains in 2-3 passes.
+    - jobalerts-noreply@linkedin.com
+    - newslettermf@class.it
+    - noreply@class.it
   timezone: Europe/Zurich
   minAgeHours: 12
   maxPerRun: 100
