@@ -5,6 +5,7 @@ while the rest of this package keeps registration behind an explicit `register()
 tests can import the module without side effects. One file reconciles the two conventions.
 """
 
-from reconciler.controllers import task_sweep
+from reconciler.controllers import sender_purge, task_sweep
 
 task_sweep.register()
+sender_purge.register()

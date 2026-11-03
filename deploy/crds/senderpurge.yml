@@ -1,0 +1,81 @@
+# SenderPurge — trash mail from listed senders once it has had its time (task `sender-purge`).
+#
+# The spec is a RETENTION POLICY, not a job: "mail from these senders is kept for the rest of
+# its day and at least `minAgeHours`, then trashed". The controller holds the mailbox to it on a
+# timer; there is no schedule to declare, because the cutoff is a function of the clock
+# (see src/reconciler/purge.py).
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: senderpurges.aware.rods.me
+spec:
+  group: aware.rods.me
+  scope: Namespaced
+  names:
+    kind: SenderPurge
+    plural: senderpurges
+    singular: senderpurge
+    shortNames: [spg]
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [senders]
+              properties:
+                senders:
+                  type: array
+                  description: >-
+                    Exact sender addresses. Matched case-insensitively against the parsed
+                    From address, never as a substring or a domain.
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                    # An address, not a pattern: an `@` with something on both sides. Rules out
+                    # the dangerous typos — an empty string, a bare domain — at apply time.
+                    pattern: '^[^@\s]+@[^@\s]+$'
+                timezone:
+                  type: string
+                  description: Where "midnight" is.
+                  default: Europe/Zurich
+                minAgeHours:
+                  type: integer
+                  description: Every mail is kept at least this long, whatever the day boundary says.
+                  minimum: 1
+                  maximum: 720
+                  default: 12
+                maxPerRun:
+                  type: integer
+                  description: The most one pass will trash. Bounds the damage of a wrong sender.
+                  minimum: 1
+                  maximum: 500
+                  default: 100
+                dryRun:
+                  type: boolean
+                  # TRUE unless the object says otherwise: trashing must be asked for.
+                  default: true
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Clean, Pending, Purged, Failed]
+                lastPass: {type: string, format: date-time}
+                cutoff: {type: string, format: date-time}
+                due: {type: integer}
+                trashed: {type: integer}
+                refused: {type: integer}
+                message: {type: string}
+      additionalPrinterColumns:
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Cutoff, type: string, jsonPath: .status.cutoff}
+        - {name: Status, type: string, jsonPath: .status.message}
+        - {name: Last, type: date, jsonPath: .status.lastPass}

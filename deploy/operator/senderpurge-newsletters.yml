@@ -1,0 +1,18 @@
+# Newsletters nobody needs past the day they arrive (owner, 2026-11-03). DRY RUN until the
+# preview in `kubectl get senderpurges` has been checked against Gmail; turning it on is
+# changing `dryRun` to false, in its own commit.
+apiVersion: aware.rods.me/v1
+kind: SenderPurge
+metadata:
+  name: newsletters
+  namespace: aware-reconciler
+  annotations:
+    # The CRD and this object can arrive in the same sync; see tasksweep-aware-todo.yml.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  senders:
+    - mftradingguide@class.it
+  timezone: Europe/Zurich
+  minAgeHours: 12
+  maxPerRun: 100
+  dryRun: true
