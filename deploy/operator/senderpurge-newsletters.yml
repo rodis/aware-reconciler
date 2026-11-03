@@ -1,6 +1,6 @@
-# Newsletters nobody needs past the day they arrive (owner, 2026-11-03). DRY RUN until the
-# preview in `kubectl get senderpurges` has been checked against Gmail; turning it on is
-# changing `dryRun` to false, in its own commit.
+# Newsletters nobody needs past the day they arrive (owner, 2026-11-03). Writes ON since
+# 2026-11-03: the dry-run preview (would trash 71, refused 0) matched a direct Gmail search
+# before this was switched. Trashed mail stays in Gmail's Bin for 30 days.
 apiVersion: aware.rods.me/v1
 kind: SenderPurge
 metadata:
@@ -15,4 +15,4 @@ spec:
   timezone: Europe/Zurich
   minAgeHours: 12
   maxPerRun: 100
-  dryRun: true
+  dryRun: false
