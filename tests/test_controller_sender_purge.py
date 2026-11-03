@@ -90,9 +90,10 @@ def test_trashing_follows_spec_dry_run(monkeypatch, dry_run):
     assert seen["dry_run"] is dry_run
 
 
-def test_the_production_object_starts_in_dry_run():
-    """Turning it on is its own commit, after the preview has been checked against Gmail."""
-    assert OBJECT["spec"]["dryRun"] is True
+def test_the_production_object_is_pinned():
+    """Writes went on 2026-11-03, after the dry-run preview matched Gmail. Pinned so a change to
+    who is purged, how soon, or whether it writes is always a visible test change."""
+    assert OBJECT["spec"]["dryRun"] is False
     assert OBJECT["spec"]["senders"] == ["mftradingguide@class.it"]
     assert OBJECT["spec"]["minAgeHours"] == 12
 
