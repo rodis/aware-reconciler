@@ -22,13 +22,11 @@ resources:
   - operator/tasksweep-aware-todo.yml
   - operator/senderpurge-newsletters.yml
   - operator/process-dreamhost-invoice.yml
-
 # The image tag is pinned here, on deploy-state only, by .github/workflows/publish.yml.
 # `sha-bootstrap` on main is a placeholder that never deploys: Argo CD tracks deploy-state.
 images:
   - name: ghcr.io/rodis/aware-reconciler
-    newTag: sha-bootstrap
-
+    newTag: sha-fddae18
 # The MySQL server's CA. Public — a CA certificate carries no private key. A content-hashed
 # name is fine here (unlike in `inference`, where an Argo WorkflowTemplate consumed it): the
 # consumer is a Deployment, so kustomize rewrites the reference, and a rotated CA rolls the pod.
