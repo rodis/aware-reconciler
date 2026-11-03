@@ -111,10 +111,11 @@ def test_acting_follows_spec_dry_run(monkeypatch, dry_run):
     assert seen["dry_run"] is dry_run
 
 
-def test_the_production_object_is_pinned_to_dry_run_until_the_swap():
-    """Writes go on in the same change that removes Argo's advance-cycles — never two advancers."""
+def test_the_production_object_is_pinned():
+    """Writes went on 2026-11-03, after Argo's advance-cycles was suspended — never two
+    advancers. Pinned so any change to what runs the invoice is a visible test change."""
     assert OBJECT["spec"] == {"definition": "dreamhost_invoice", "timezone": "Europe/Zurich",
-                              "openScheduled": True, "dryRun": True}
+                              "openScheduled": True, "dryRun": False}
 
 
 def test_register_attaches_a_timer_that_matches_the_crd():
