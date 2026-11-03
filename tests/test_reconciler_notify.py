@@ -162,7 +162,7 @@ def test_the_world_hands_each_action_its_own_stage_config():
     # The day rate is required and undefaulted, so a result at all proves the YAML's
     # `config:` block reached the action.
     assert result["days"] == 23
-    assert result["lines"][0]["amount"] == "18400"
+    assert result["lines"][0]["amount"] == "18032"   # 23 x 784 (98/h x 8), the real definition since 2026-11-03
 
 
 def test_reaching_an_unbuilt_await_is_loud_not_silent():
