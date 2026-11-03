@@ -1,4 +1,4 @@
-# What kopf 1.45.1 needs to run TaskSweep and SenderPurge in one namespace. Found by running it on the dev
+# What kopf 1.45.1 needs to run TaskSweep, SenderPurge and Process in one namespace. Found by running it on the dev
 # cluster (2026-10-21), not from documentation — re-check if the kopf pin moves.
 apiVersion: v1
 kind: ServiceAccount
@@ -45,10 +45,10 @@ rules:
   # `patch` on the object is for kopf's own progress annotations. `.status` is a subresource
   # with its own grant, so this role can write status but never change a spec.
   - apiGroups: [aware.rods.me]
-    resources: [tasksweeps, senderpurges]
+    resources: [tasksweeps, senderpurges, processes]
     verbs: [get, list, watch, patch]
   - apiGroups: [aware.rods.me]
-    resources: [tasksweeps/status, senderpurges/status]
+    resources: [tasksweeps/status, senderpurges/status, processes/status]
     verbs: [get, patch]
   # kopf posts Events for handler outcomes, so `kubectl describe` explains a failing pass.
   - apiGroups: [""]
