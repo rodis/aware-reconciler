@@ -1,4 +1,4 @@
-# The operator. It reconciles the TaskSweep objects in this namespace (tasksweep-aware-todo.yml).
+# The operator. It reconciles the TaskSweep and SenderPurge objects in this namespace.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,6 +49,9 @@ spec:
             - {name: RECONCILER_STORE, value: mysql}
             - {name: MYSQL_SSL_CA, value: /etc/ssl/mysql/mysql-ca.pem}
             - {name: PYTHONUNBUFFERED, value: "1"}
+            # The SenderPurge trash relay (n8n `Relay: gmail trash`, QqDX8ib4qXWFgysC). Plain config,
+            # not a secret: the URL alone does nothing, the relay requires MAIL_RELAY_TOKEN.
+            - {name: GMAIL_TRASH_URL, value: "https://n8n.prod.rods.me/webhook/ca985ed4-0d2b-42fe-a7e7-9a7ba5318d80"}
           volumeMounts:
             - {name: mysql-ca, mountPath: /etc/ssl/mysql, readOnly: true}
           resources:

@@ -27,11 +27,12 @@ from reconciler.adapters.mail import (
     SmtpMailer,
 )
 from reconciler.adapters.ingest import DryRunEvents, GatewayEvents
+from reconciler.adapters.trash import N8nTrashRelay
 from reconciler.adapters.mysql import MysqlMilestones, MysqlTasks, MysqlWriter
 from reconciler.adapters.neon import NeonMilestones, NeonTasks
 from reconciler.core import Cycle, Milestone, MilestoneStore, Outcome, reconcile
 from reconciler.definition import GENESIS_STAGE, ProcessDefinition, load_definitions
-from reconciler import tasks
+from reconciler import purge, tasks
 from reconciler.tasks import TASK_INGEST_APP
 from reconciler.finder import SignalFinder
 from reconciler.recording import (
@@ -297,6 +298,44 @@ def sweep_tasks(*, label: str = tasks.DEFAULT_LABEL, user: str | None = None,
         user_id=user or os.environ.get("AWARE_USER_ID", "rods"),
         label=label,
         lookback_days=lookback_days,
+    )
+
+def trash_relay() -> N8nTrashRelay | None:
+    """The trash relay, or None when `GMAIL_TRASH_URL` is unset.
+
+    None rather than an error, so a dry-run purge works with no trash URL configured at all —
+    it never calls the relay. A real pass without one fails in `purge_senders`.
+    """
+    url = os.environ.get("GMAIL_TRASH_URL")
+    if not url:
+        return None
+    return N8nTrashRelay(
+        url=url,
+        token=os.environ["MAIL_RELAY_TOKEN"],
+        header=os.environ.get("MAIL_RELAY_HEADER", "X-Relay-Token"),
+    )
+
+
+def purge_senders(*, senders: list[str], tz: str = "Europe/Zurich",
+                  min_age_hours: float = 12, max_per_run: int = 100,
+                  options: RunOptions | None = None,
+                  now: datetime | None = None) -> purge.PurgePlan:
+    """One sender purge (see `reconciler.purge`)."""
+    from zoneinfo import ZoneInfo
+
+    options = options or RunOptions()
+    trasher = trash_relay()
+    if trasher is None and not options.dry_run:
+        raise ConfigurationError("GMAIL_TRASH_URL is not set (use dry_run to preview)")
+    return purge.purge(
+        source=task_query(),
+        trasher=trasher,
+        senders=senders,
+        now=now or datetime.now(UTC),
+        tz=ZoneInfo(tz),
+        min_age=timedelta(hours=min_age_hours),
+        max_per_run=max_per_run,
+        dry_run=options.dry_run,
     )
 
 # --- sequence -------------------------------------------------------------------------------
