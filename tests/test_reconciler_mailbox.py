@@ -103,3 +103,33 @@ def test_housekeeping_comes_after_every_invoice_stage():
     """A pass ends at the first raise, so an archive failure must never precede real work."""
     kinds = ["archive" if s.action == "gmail.archive" else "work" for s in _invoice().stages]
     assert kinds == sorted(kinds, key=lambda k: k == "archive")
+
+
+# --- through core + world, the path a real pass takes -------------------------------------
+
+def test_each_archive_stage_archives_its_own_mail_in_a_real_pass():
+    """Regression, 2026-11-14: `RealWorld` looked config up by ACTION, so all four
+    `gmail.archive` stages ran with the first one's config and archived the approval mail
+    four times. Calling the action directly (the tests above) could not see that."""
+    from reconciler.adapters.gateway import DryRunMilestones
+    from reconciler.core import reconcile
+    from reconciler.world import RealWorld
+
+    invoice = _invoice()
+    relay = FakeRelay()
+    world = RealWorld(invoice, sink=DryRunMilestones(invoice), services=Services(labels=relay))
+    cycle = Cycle(key="dh_invoice_2026_011", process=invoice.name, user_id="u", opened_at=1)
+    ids = {"data_approved": "approval", "invoice_approved": "pdf",
+           "payment_submitted": "submitted", "payment_processed": "processed"}
+    # Every invoice stage already recorded, as on the four complete cycles at deploy time.
+    done = {s.name: Milestone(s.name, 10, {"evidence": {"upstream_id": ids.get(s.name)}})
+            for s in invoice.stages if s.action != "gmail.archive"}
+
+    reconcile(invoice, cycle, done, world)
+
+    assert sorted(relay.calls) == sorted([
+        ("approval", "INBOX"), ("approval", LABEL),
+        ("submitted", "INBOX"),
+        ("processed", "INBOX"),
+        ("pdf", "INBOX"), ("pdf", LABEL),
+    ])

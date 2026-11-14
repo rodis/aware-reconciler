@@ -22,7 +22,7 @@ class FakeWorld:
         self.looked: list[tuple[str, int]] = []
         self.recorded: list[tuple[str, dict]] = []
 
-    def act(self, action, cycle, milestones):
+    def act(self, action, cycle, milestones, stage=None):
         self.acted.append(action)
         return {"action": action}
 
@@ -230,7 +230,7 @@ def test_an_act_returning_an_empty_payload_still_completes(cycle):
     branches on that. Absence is graceful everywhere, or the definition grows conditionals."""
 
     class EmptyWorld(FakeWorld):
-        def act(self, action, cycle, milestones):
+        def act(self, action, cycle, milestones, stage=None):
             self.acted.append(action)
             return {}
 

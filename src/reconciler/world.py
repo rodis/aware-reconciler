@@ -41,15 +41,19 @@ class RealWorld:
         self._config_for = {stage.name: stage.config for stage in definition.stages}
         self._action_for = {stage.name: stage.action for stage in definition.stages}
 
-    # `core` passes the action string, so map back to the stage to find its config block.
+    # Only for callers that name no stage. Returns the FIRST stage with this action, which is
+    # wrong whenever two stages share one: on 2026-11-14 four `gmail.archive` stages all ran
+    # with the first one's config and archived the approval mail four times. `core` always
+    # passes `stage`, so this fallback is never reached by a real pass.
     def _stage_of(self, action: str) -> str | None:
         for stage, configured in self._action_for.items():
             if configured == action:
                 return stage
         return None
 
-    def act(self, action: str, cycle: Cycle, milestones: dict[str, Milestone]) -> dict:
-        stage = self._stage_of(action)
+    def act(self, action: str, cycle: Cycle, milestones: dict[str, Milestone],
+            stage: str | None = None) -> dict:
+        stage = stage or self._stage_of(action)
         context = ActionContext(
             cycle=cycle,
             milestones=milestones,

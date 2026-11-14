@@ -85,8 +85,14 @@ class World(Protocol):
     passes a dict-backed fake. Mirrors the `StateStore` port in `inference.runtime.core`.
     """
 
-    def act(self, action: str, cycle: Cycle, milestones: dict[str, Milestone]) -> dict:
-        """Perform `action` and return its payload. Side effects live here."""
+    def act(self, action: str, cycle: Cycle, milestones: dict[str, Milestone],
+            stage: str | None = None) -> dict:
+        """Perform `action` for `stage` and return its payload. Side effects live here.
+
+        `stage` names the step, because an action is not a step: several stages may share one
+        action with different `config` (every `gmail.archive` stage does), so the action string
+        alone cannot say whose config to use.
+        """
         ...
 
     def find(self, signal: dict, cycle: Cycle, since: int,
@@ -214,7 +220,7 @@ def reconcile(
             continue
 
         if stage.kind == "act":
-            payload = world.act(stage.action, cycle, milestones)
+            payload = world.act(stage.action, cycle, milestones, stage=stage.name)
         else:
             payload = world.find(stage.signal, cycle,
                                  _since(stage, cycle, milestones), milestones)
