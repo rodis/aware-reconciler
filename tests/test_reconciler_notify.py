@@ -228,14 +228,14 @@ def test_a_rejected_relay_call_raises_rather_than_stalling(monkeypatch):
                        recipient="me@example.com").send(subject="x", html="", text="")
 
 
-def test_the_mail_tells_you_to_apply_the_label_not_to_reply():
-    """The gate is closed by a Gmail label. An instruction to reply would be a mechanism that
-    does not exist — worse than saying nothing, because it looks actionable."""
+def test_the_mail_tells_you_to_reply_yes_not_to_label():
+    """The gate is closed by replying "yes". An instruction to apply a label would name a
+    mechanism that no longer exists — worse than saying nothing, because it looks actionable."""
     _, html, text = render_approval(_july_ctx())
-    assert "aware/invoice-approved" in text
-    assert "aware/invoice-approved" in html
-    assert "reply" not in text.lower()
-    assert "reply" not in html.lower()
+    assert 'reply "yes"' in text
+    assert "reply &quot;yes&quot;" in html
+    assert "label" not in text.lower()
+    assert "label" not in html.lower()
 
 
 def test_the_approve_instruction_follows_the_configured_label():

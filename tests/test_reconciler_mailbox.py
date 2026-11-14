@@ -91,12 +91,16 @@ def test_every_mail_the_invoice_waits_on_is_archived_after_its_stage():
     assert archived["invoice_approved"].after == ["payment_processed"]
 
 
-def test_our_labelled_mails_also_lose_the_approval_label():
-    archived = {s.config["evidence_of"]: s.config.get("remove_labels", [])
-                for s in _invoice().stages if s.action == "gmail.archive"}
-    gate_label = {s.name: s.signal.get("label") for s in _invoice().stages if s.kind == "await"}
-    for stage, removed in archived.items():
-        assert removed == ([gate_label[stage]] if gate_label[stage] else [])
+def test_reply_gates_archive_the_mail_that_was_answered_not_the_reply():
+    """A reply sits in Sent with no INBOX; the mail in the inbox is the one it answered."""
+    relay = FakeRelay()
+    cycle = Cycle(key="k", process="dreamhost_invoice", user_id="u", opened_at=1)
+    ctx = ActionContext(cycle=cycle, config={"evidence_of": "data_approved"},
+                        services=Services(labels=relay), milestones={
+                            "data_approved": Milestone("data_approved", 2, {
+                                "replied_to": "original", "evidence": {"upstream_id": "reply"}})})
+    build_action("gmail.archive")(ctx)
+    assert relay.calls == [("original", "INBOX")]
 
 
 def test_housekeeping_comes_after_every_invoice_stage():
@@ -128,8 +132,5 @@ def test_each_archive_stage_archives_its_own_mail_in_a_real_pass():
     reconcile(invoice, cycle, done, world)
 
     assert sorted(relay.calls) == sorted([
-        ("approval", "INBOX"), ("approval", LABEL),
-        ("submitted", "INBOX"),
-        ("processed", "INBOX"),
-        ("pdf", "INBOX"), ("pdf", LABEL),
+        ("approval", "INBOX"), ("submitted", "INBOX"), ("processed", "INBOX"), ("pdf", "INBOX"),
     ])

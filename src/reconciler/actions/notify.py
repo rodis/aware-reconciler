@@ -18,8 +18,8 @@ logger = logging.getLogger("reconciler.actions.notify")
 
 _CENTS = Decimal("0.01")
 
-# The gate is closed by a Gmail label, never by replying — see the `data_approved` stage.
-DEFAULT_APPROVE_HINT = "To approve, apply the aware/invoice-approved label to this email."
+# The gate is closed by replying "yes" to the mail itself — see the `data_approved` stage.
+DEFAULT_APPROVE_HINT = 'To approve, reply "yes" to this email.'
 
 
 class Mailer(Protocol):
@@ -61,8 +61,8 @@ def render_approval(ctx: ActionContext) -> tuple[str, str, str]:
         "extras_hint",
         "To add an expense or bonus line, add a row before you approve.",
     )
-    # How to approve is CONFIG, not prose: the gate is closed by a Gmail label, and if the
-    # label in the definition ever changes, the mail telling you which one to apply must
+    # How to approve is CONFIG, not prose: the gate is closed by a reply, and if the
+    # accepted answer in the definition ever changes, the mail telling you what to reply must
     # change with it. An instruction that drifts from the mechanism is worse than none.
     approve = ctx.config.get("approve_hint", DEFAULT_APPROVE_HINT)
 
@@ -156,7 +156,7 @@ def invoice_ready(ctx: ActionContext) -> dict:
                "<p style=\"margin:0 0 12px;color:#999;font-size:12px\">Link expires 7 days "
                "after rendering.</p>" if pdf_url else
                "<p style=\"margin:0 0 12px;color:#c00\">No PDF link was recorded.</p>")
-            + f"<p style=\"margin:0 0 12px\">Check the PDF, then "
+            + f"<p style=\"margin:0 0 12px\">Check the PDF. "
             f"{escape(approve_hint)}</p>"
             "<p style=\"margin:0;color:#666\">If anything is wrong, void the cycle and "
             "re-run rather than editing the invoice.</p>"

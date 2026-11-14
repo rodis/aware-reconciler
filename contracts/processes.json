@@ -50,7 +50,7 @@
           "after": [
             "approval_requested"
           ],
-          "detail": "gmail: aware/invoice-approved",
+          "detail": "gmail",
           "event": "dreamhost_invoice_data_approved"
         },
         {
@@ -100,7 +100,7 @@
           "after": [
             "invoice_emailed"
           ],
-          "detail": "gmail: aware/invoice-approved",
+          "detail": "gmail",
           "event": "dreamhost_invoice_invoice_approved"
         },
         {

@@ -43,27 +43,27 @@ stages:
     config:
       currency: USD
 
-  # GATE ①. Approval is a Gmail LABEL, not a reply — so no interpretation is involved:
-  # applying the label IS the decision. The reconciler ASKS Gmail (through n8n) at decision
-  # time rather than waiting to be told, so an unreachable n8n raises instead of looking
-  # exactly like "not approved yet".
+  # GATE ①. Approval is a REPLY to the approval mail whose first word is "yes" — a plain word
+  # comparison, so no interpretation is involved. (Until 2026-11-14 it was a Gmail label;
+  # replying works from any client and leaves room for answering with more than a yes.)
+  # The reconciler ASKS Gmail (through n8n) at decision time rather than waiting to be told,
+  # so an unreachable n8n raises instead of looking exactly like "not approved yet".
   #
-  # `correlate_on: subject` ties a labelled mail to THIS cycle — `approval_requested` recorded
-  # the subject it sent — so two invoices open at once (a monthly and a bonus) can never
-  # satisfy each other's gate.
-  #
-  # Note both gates share ONE label. Correlation is on subject, not on the label, so gate ②
-  # below cannot be closed by gate ①'s mail — which is why you need only one label in Gmail.
+  # `correlate_on: subject` ties the reply to THIS cycle — `approval_requested` recorded the
+  # subject it sent, and the reply's subject is that one behind `Re:` — so two invoices open at
+  # once (a monthly and a bonus) can never satisfy each other's gate. Only a mail carrying
+  # Gmail's SENT label counts: the request arrives from the relay's sender, so SENT can only be
+  # your answer. Any other first word (a "no", a question) is logged and the gate stays open.
   - name: data_approved
     kind: await
     after: [approval_requested]
     signal:
       source: gmail
-      label: aware/invoice-approved
       correlate_on: subject
-      # The evidence's time is the mail's own `Date` header — i.e. roughly when WE sent the
-      # request, not when the label was applied — so it legitimately predates the milestone
-      # that asked for it. correlate_on is what keeps this window safe.
+      reply:
+        # QUOTED: YAML 1.1 reads a bare `yes` as boolean true (the `on` trap again), and the
+        # gate would then wait for a reply starting with "true".
+        accept: ["yes"]
       slack_seconds: 900
 
   # AFTER gate ① on purpose. The approval wait is the window in which a human is actually
@@ -111,7 +111,7 @@ stages:
     config:
       currency: USD
 
-  # GATE ②. Same label, different subject, so the finder cannot confuse it with gate ①.
+  # GATE ②. Same mechanism, different subject, so a reply to gate ①'s mail cannot close it.
   # Closing this means "the PDF is right, I am submitting it": submission itself is manual
   # today and nothing observes it. When it is automated, an `invoice_submitted` act stage
   # slots in here — a YAML change, no code.
@@ -120,8 +120,9 @@ stages:
     after: [invoice_emailed]
     signal:
       source: gmail
-      label: aware/invoice-approved
       correlate_on: subject
+      reply:
+        accept: ["yes"]
       slack_seconds: 900
 
   # The two payment mails are ~3 HOURS apart (observed 2026-07-15: submitted 15:17, processed
@@ -180,9 +181,8 @@ stages:
 
   # --- housekeeping: archive each mail once the process has moved past it ------------------
   #
-  # `gmail.archive` takes INBOX off the mail a gate matched (its `evidence.upstream_id`), plus
-  # any `remove_labels`. Our two labelled mails also lose `aware/invoice-approved`, so that
-  # label only ever shows what is still in flight.
+  # `gmail.archive` takes INBOX off the mail a gate matched. For the two reply gates that is
+  # the mail you answered (`replied_to`), not your reply, which is in Sent and has no INBOX.
   #
   # LAST in the file on purpose, though each depends only on its own gate. A pass walks stages
   # in file order and an `act` that raises ends the pass, so housekeeping placed here can never
@@ -197,7 +197,6 @@ stages:
     action: gmail.archive
     config:
       evidence_of: data_approved
-      remove_labels: [aware/invoice-approved]
 
   - name: payment_submitted_mail_archived
     kind: act
@@ -219,4 +218,3 @@ stages:
     action: gmail.archive
     config:
       evidence_of: invoice_approved
-      remove_labels: [aware/invoice-approved]

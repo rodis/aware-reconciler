@@ -160,13 +160,14 @@ def test_the_invoice_has_two_approval_gates():
     assert order.index("invoice_approved") > order.index("invoice_emailed")
 
 
-def test_both_gates_share_one_label_and_are_told_apart_by_subject():
-    """One Gmail label is enough because correlation is on subject, not on the label — so
-    gate ①'s mail can never close gate ②."""
+def test_both_gates_are_closed_by_a_yes_reply_told_apart_by_subject():
+    """One mechanism for both gates; correlation is on subject, so a reply to gate ①'s mail
+    can never close gate ②."""
     invoice = load_definitions(PROCESSES_DIR)[0]
     gates = [s for s in invoice.stages if s.name in ("data_approved", "invoice_approved")]
-    assert len({g.signal["label"] for g in gates}) == 1
+    assert all(g.signal["reply"]["accept"] == ["yes"] for g in gates)
     assert all(g.signal["correlate_on"] == "subject" for g in gates)
+    assert not any("label" in g.signal for g in gates)
 
 
 def test_no_await_waits_to_be_told():
