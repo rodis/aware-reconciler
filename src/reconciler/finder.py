@@ -52,6 +52,7 @@ class SignalFinder:
                           appear somewhere in the message's text
         where:            plain field equality filters, e.g. {from: accounting@example.com}
         classify:         a yes/no question a `Classifier` answers about the message
+        reply:            the human answers by REPLYING to a mail we sent (see below)
         slack_seconds:    how far before `since` to look
 
     **Slack is not sloppiness.** For a mail we sent ourselves, the evidence's time is the
@@ -65,6 +66,20 @@ class SignalFinder:
     in a sentence, so the tie has to be a substring test. It is still deterministic, and it is
     still what makes the widened window safe — the classifier is never asked whose invoice a
     mail is about.
+
+    **`reply` is a yes/no gate closed by answering the mail.** With `correlate_on: subject` it
+    narrows the search to that subject, and a candidate matches only if it is
+
+    - **ours**: it carries Gmail's `SENT` label. The mail we sent arrives from the relay's
+      sender, never from this mailbox, so `SENT` can only be the human's reply;
+    - **a reply to this cycle's mail**: its subject equals the expected one once `Re:`/`Fwd:`
+      prefixes are stripped;
+    - **a yes**: the first word of its text is in `reply.accept`. Anything else (a "no", a
+      question, a forgotten line) is logged and leaves the gate open. No interpretation:
+      reading free text is a later, separate step.
+
+    The match records `replied_to`, the original mail in the same thread, because that is the
+    one sitting in the inbox: archiving it archives the thread, since a reply never has `INBOX`.
 
     Filters run cheapest-first and the classifier runs **last**, so a reconcile that finds no
     plausible mail spends nothing on interpretation.
@@ -110,6 +125,19 @@ class SignalFinder:
                 f"cycle {cycle.key}: signal asks a `classify` question but no classifier "
                 f"is wired for source {signal.get('source', '?')!r}")
 
+        reply = signal.get("reply")
+        if reply is not None:
+            if correlate_on != "subject" or expected is None:
+                raise ValueError(f"cycle {cycle.key}: a `reply` signal needs `correlate_on: subject`")
+            words = reply.get("accept", ["yes"])
+            if not all(isinstance(word, str) for word in words):
+                # YAML 1.1 turns a bare `yes`/`no`/`on` into a boolean; stringifying it would
+                # quietly make the gate wait for "true".
+                raise ValueError(f"cycle {cycle.key}: `reply.accept` must be quoted strings, "
+                                 f"got {words!r}")
+            accept = {word.lower() for word in words}
+            return self._find_reply(signal, cycle, max(0, since - slack), expected, accept)
+
         for ts, body in self._source.candidates(signal, max(0, since - slack)):
             if any(body.get(field) != value for field, value in where.items()):
                 continue
@@ -132,6 +160,51 @@ class SignalFinder:
             logger.info("cycle %s: matched evidence at %s", cycle.key, ts)
             return found
         return None
+
+
+    def _find_reply(self, signal: dict, cycle: Cycle, since: int, subject: str,
+                    accept: set[str]) -> dict | None:
+        # The subject goes into the search, not just the filter: `in:sent` alone would page
+        # through every mail sent since the request and could push the reply past `limit`.
+        query = {**signal, "q": " ".join(filter(None, [
+            signal.get("q"), f'subject:"{subject.replace(chr(34), "")}"']))}
+        candidates = self._source.candidates(query, since)
+
+        # The mail we sent: the newest non-SENT message per thread. Newest, because a re-sent
+        # request starts a fresh thread and the reply is in whichever one was answered.
+        originals: dict[str, str] = {}
+        for _, body in candidates:
+            if "SENT" not in body.get("labels", []) and body.get("gmail_thread_id"):
+                originals[body["gmail_thread_id"]] = body.get("upstream_id")
+
+        for ts, body in candidates:
+            if "SENT" not in body.get("labels", []):
+                continue
+            if _strip_reply_prefixes(body.get("subject", "")) != subject:
+                continue
+            answer = _first_word(body.get("snippet", ""))
+            if answer not in accept:
+                logger.info("cycle %s: reply at %s answers %r, not %s; still waiting",
+                            cycle.key, ts, answer, sorted(accept))
+                continue
+            logger.info("cycle %s: approved by reply at %s", cycle.key, ts)
+            return {"matched": signal.get("source", "signal"), "matched_at": ts,
+                    "answer": answer, "evidence": body,
+                    "replied_to": originals.get(body.get("gmail_thread_id"))}
+        return None
+
+
+_REPLY_PREFIX = re.compile(r"^\s*((re|fwd?|aw|wg)\s*:\s*)+", re.IGNORECASE)
+
+
+def _strip_reply_prefixes(subject: str) -> str:
+    return _REPLY_PREFIX.sub("", subject).strip()
+
+
+def _first_word(text: str) -> str:
+    """`Yes!`, `yes.`, `YES, go ahead` all read as `yes`."""
+    match = re.match(r"\s*([^\W_]+)", text)
+    return match.group(1).lower() if match else ""
 
 
 def _mention_variants(value) -> list[str]:

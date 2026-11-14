@@ -8,16 +8,16 @@ label-remove relay the task board uses does it with no n8n change (`INBOX` is a 
 and appears in the relay's label listing like any other).
 
 **Which mail is not a guess.** A satisfied `await` records the message it matched under
-`evidence.upstream_id`; `config.evidence_of` names that stage. The action never searches.
+`evidence.upstream_id`, or, for a gate closed by reply, the mail that was answered under
+`replied_to`; `config.evidence_of` names that stage. The action never searches.
 
 **Why an `act` stage, not a side effect of the await.** A recorded milestone is what stops the
 next pass doing it again, and it puts the archiving on the board where it can be seen. It also
 keeps the timing a YAML decision: the invoice mail is archived as the LAST stage, not when its
 own gate closes, because it is the one mail worth keeping in view until the money has landed.
 
-**Removing the approval label too** (`config.remove_labels`) is what makes the archive stick:
-a mail still labelled `aware/invoice-approved` keeps showing under that label, which is the
-view a human checks to see what is still in flight.
+`config.remove_labels` takes further labels off after `INBOX`. The invoice used it for its
+approval label until its gates moved to replies; it stays for any process gated on a label.
 
 Config:
     evidence_of:    the await stage whose matched mail to archive (required)
@@ -46,8 +46,11 @@ def archive(ctx: ActionContext) -> dict:
     if not stage:
         raise ValueError("gmail.archive needs `evidence_of`: the stage whose mail to archive")
     # `after` guarantees the stage is recorded; a KeyError here is a definition bug.
-    evidence = ctx.milestones[stage].payload.get("evidence") or {}
-    message_id = evidence.get("upstream_id")
+    payload = ctx.milestones[stage].payload
+    evidence = payload.get("evidence") or {}
+    # A gate closed by REPLY matched the reply, which is in Sent and has no INBOX to remove.
+    # The mail in the inbox is the one it answered, so that is the one to archive.
+    message_id = payload.get("replied_to") or evidence.get("upstream_id")
     if not message_id:
         # Recorded, not raised. A raise would stop every later cycle in the same pass, every
         # pass, for a mail there is no way to identify — and there is nothing to retry.

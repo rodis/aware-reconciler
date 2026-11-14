@@ -91,15 +91,46 @@ def test_every_mail_the_invoice_waits_on_is_archived_after_its_stage():
     assert archived["invoice_approved"].after == ["payment_processed"]
 
 
-def test_our_labelled_mails_also_lose_the_approval_label():
-    archived = {s.config["evidence_of"]: s.config.get("remove_labels", [])
-                for s in _invoice().stages if s.action == "gmail.archive"}
-    gate_label = {s.name: s.signal.get("label") for s in _invoice().stages if s.kind == "await"}
-    for stage, removed in archived.items():
-        assert removed == ([gate_label[stage]] if gate_label[stage] else [])
+def test_reply_gates_archive_the_mail_that_was_answered_not_the_reply():
+    """A reply sits in Sent with no INBOX; the mail in the inbox is the one it answered."""
+    relay = FakeRelay()
+    cycle = Cycle(key="k", process="dreamhost_invoice", user_id="u", opened_at=1)
+    ctx = ActionContext(cycle=cycle, config={"evidence_of": "data_approved"},
+                        services=Services(labels=relay), milestones={
+                            "data_approved": Milestone("data_approved", 2, {
+                                "replied_to": "original", "evidence": {"upstream_id": "reply"}})})
+    build_action("gmail.archive")(ctx)
+    assert relay.calls == [("original", "INBOX")]
 
 
 def test_housekeeping_comes_after_every_invoice_stage():
     """A pass ends at the first raise, so an archive failure must never precede real work."""
     kinds = ["archive" if s.action == "gmail.archive" else "work" for s in _invoice().stages]
     assert kinds == sorted(kinds, key=lambda k: k == "archive")
+
+
+# --- through core + world, the path a real pass takes -------------------------------------
+
+def test_each_archive_stage_archives_its_own_mail_in_a_real_pass():
+    """Regression, 2026-11-14: `RealWorld` looked config up by ACTION, so all four
+    `gmail.archive` stages ran with the first one's config and archived the approval mail
+    four times. Calling the action directly (the tests above) could not see that."""
+    from reconciler.adapters.gateway import DryRunMilestones
+    from reconciler.core import reconcile
+    from reconciler.world import RealWorld
+
+    invoice = _invoice()
+    relay = FakeRelay()
+    world = RealWorld(invoice, sink=DryRunMilestones(invoice), services=Services(labels=relay))
+    cycle = Cycle(key="dh_invoice_2026_011", process=invoice.name, user_id="u", opened_at=1)
+    ids = {"data_approved": "approval", "invoice_approved": "pdf",
+           "payment_submitted": "submitted", "payment_processed": "processed"}
+    # Every invoice stage already recorded, as on the four complete cycles at deploy time.
+    done = {s.name: Milestone(s.name, 10, {"evidence": {"upstream_id": ids.get(s.name)}})
+            for s in invoice.stages if s.action != "gmail.archive"}
+
+    reconcile(invoice, cycle, done, world)
+
+    assert sorted(relay.calls) == sorted([
+        ("approval", "INBOX"), ("submitted", "INBOX"), ("processed", "INBOX"), ("pdf", "INBOX"),
+    ])

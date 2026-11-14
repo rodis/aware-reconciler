@@ -188,3 +188,91 @@ def test_a_satisfied_await_is_stamped_with_the_evidence_time():
 def test_an_act_payload_is_stamped_with_now():
     from reconciler.adapters.gateway import event_time
     assert event_time({"lines": []}, 4242) == 4242
+
+
+# --- reply gates --------------------------------------------------------------------------
+
+class FakeGmail:
+    """A CandidateSource answering from a scripted mailbox, recording the query it was asked."""
+
+    def __init__(self, mails):
+        self.mails = mails
+        self.asked = []
+
+    def candidates(self, signal, since):
+        self.asked.append(signal)
+        return [(ts, body) for ts, body in self.mails if ts >= since]
+
+
+SUBJECT = "Invoice 12 — please check and approve"
+REPLY_SIGNAL = {"source": "gmail", "correlate_on": "subject", "reply": {"accept": ["yes"]}}
+
+
+def _sent(ts, text, subject=f"Re: {SUBJECT}", thread="t1", upstream_id="r1"):
+    return (ts, {"subject": subject, "snippet": text, "labels": ["SENT"],
+                 "gmail_thread_id": thread, "upstream_id": upstream_id})
+
+
+def _original(ts=2000, thread="t1", upstream_id="o1"):
+    return (ts, {"subject": SUBJECT, "snippet": "Invoice 12 ...", "labels": ["INBOX"],
+                 "gmail_thread_id": thread, "upstream_id": upstream_id})
+
+
+def test_a_yes_reply_closes_the_gate_and_names_the_mail_it_answered():
+    gmail = FakeGmail([_original(), _sent(2500, "Yes! On Sat, ... wrote: > Invoice 12")])
+    found = SignalFinder(gmail).find(REPLY_SIGNAL, _cycle(), 2000, _requested(SUBJECT))
+    assert found["answer"] == "yes"
+    assert found["matched_at"] == 2500
+    assert found["evidence"]["upstream_id"] == "r1"
+    assert found["replied_to"] == "o1"
+    assert f'subject:"{SUBJECT}"' in gmail.asked[0]["q"]
+
+
+def test_a_no_or_a_question_leaves_the_gate_open():
+    for text in ("No, the days are wrong", "I forgot the travel expense", ""):
+        gmail = FakeGmail([_original(), _sent(2500, text)])
+        assert SignalFinder(gmail).find(REPLY_SIGNAL, _cycle(), 2000, _requested(SUBJECT)) is None
+
+
+def test_the_request_itself_never_counts_even_though_it_mentions_approve():
+    """Only SENT mail is ours. The request arrives from the relay's sender."""
+    gmail = FakeGmail([(2500, {"subject": SUBJECT, "snippet": "yes", "labels": ["INBOX"],
+                               "gmail_thread_id": "t1", "upstream_id": "o1"})])
+    assert SignalFinder(gmail).find(REPLY_SIGNAL, _cycle(), 2000, _requested(SUBJECT)) is None
+
+
+def test_a_reply_to_another_invoice_does_not_close_this_gate():
+    gmail = FakeGmail([_sent(2500, "yes", subject="Re: Invoice 13 — please check and approve")])
+    assert SignalFinder(gmail).find(REPLY_SIGNAL, _cycle(), 2000, _requested(SUBJECT)) is None
+
+
+def test_gate_two_s_reply_cannot_close_gate_one():
+    gmail = FakeGmail([_sent(2500, "yes", subject="Re: Invoice 12-2026 — PDF ready to submit")])
+    assert SignalFinder(gmail).find(REPLY_SIGNAL, _cycle(), 2000, _requested(SUBJECT)) is None
+
+
+def test_stacked_reply_prefixes_are_stripped():
+    gmail = FakeGmail([_sent(2500, "yes", subject=f"RE: Fwd: re:{SUBJECT}")])
+    assert SignalFinder(gmail).find(REPLY_SIGNAL, _cycle(), 2000, _requested(SUBJECT))
+
+
+def test_a_later_yes_after_a_no_closes_the_gate():
+    gmail = FakeGmail([_original(), _sent(2500, "no wait", upstream_id="r1"),
+                       _sent(2600, "yes", upstream_id="r2")])
+    found = SignalFinder(gmail).find(REPLY_SIGNAL, _cycle(), 2000, _requested(SUBJECT))
+    assert found["evidence"]["upstream_id"] == "r2"
+
+
+def test_a_reply_gate_without_subject_correlation_is_a_definition_error():
+    import pytest
+    with pytest.raises(ValueError, match="correlate_on: subject"):
+        SignalFinder(FakeGmail([])).find({"source": "gmail", "correlate_on": "invoice_number",
+                                          "reply": {}}, _cycle(), 0,
+                                         {"x": Milestone("x", 1, {"invoice_number": 12})})
+
+
+def test_an_unquoted_yaml_yes_is_refused_not_read_as_true():
+    import pytest
+    with pytest.raises(ValueError, match="quoted"):
+        SignalFinder(FakeGmail([])).find({**REPLY_SIGNAL, "reply": {"accept": [True]}},
+                                         _cycle(), 0, _requested(SUBJECT))
