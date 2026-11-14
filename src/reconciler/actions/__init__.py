@@ -41,6 +41,10 @@ class PdfRenderer(Protocol):
     def render(self, *, template_id: str, data: dict) -> dict: ...
 
 
+class LabelRemover(Protocol):
+    def remove(self, *, message_id: str, label: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class Services:
     """Ports the impure actions need. Optional so a pure action needs none of them wired."""
@@ -48,6 +52,7 @@ class Services:
     extras: ExtrasSource | None = None
     mailer: Mailer | None = None
     pdf: PdfRenderer | None = None
+    labels: LabelRemover | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,7 @@ def registered_actions() -> list[str]:
 from reconciler.actions import (  # noqa: E402,F401  (side-effect imports)
     compute,
     lines,
+    mailbox,
     notify,
     render,
 )

@@ -122,6 +122,46 @@
           ],
           "detail": "classify: accounting@dreamhost.com",
           "event": "dreamhost_invoice_payment_processed"
+        },
+        {
+          "name": "approval_mail_archived",
+          "label": "Approval mail archived",
+          "kind": "act",
+          "after": [
+            "data_approved"
+          ],
+          "detail": "gmail.archive",
+          "event": "dreamhost_invoice_approval_mail_archived"
+        },
+        {
+          "name": "payment_submitted_mail_archived",
+          "label": "Payment submitted mail archived",
+          "kind": "act",
+          "after": [
+            "payment_submitted"
+          ],
+          "detail": "gmail.archive",
+          "event": "dreamhost_invoice_payment_submitted_mail_archived"
+        },
+        {
+          "name": "payment_processed_mail_archived",
+          "label": "Payment processed mail archived",
+          "kind": "act",
+          "after": [
+            "payment_processed"
+          ],
+          "detail": "gmail.archive",
+          "event": "dreamhost_invoice_payment_processed_mail_archived"
+        },
+        {
+          "name": "invoice_mail_archived",
+          "label": "Invoice mail archived",
+          "kind": "act",
+          "after": [
+            "payment_processed"
+          ],
+          "detail": "gmail.archive",
+          "event": "dreamhost_invoice_invoice_mail_archived"
         }
       ],
       "void_event": "dreamhost_invoice_cycle_voided"

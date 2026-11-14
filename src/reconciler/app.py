@@ -27,7 +27,9 @@ from reconciler.adapters.mail import (
     SmtpMailer,
 )
 from reconciler.adapters.ingest import DryRunEvents, GatewayEvents
+from reconciler.adapters.labels import N8nLabelRelay
 from reconciler.adapters.trash import N8nTrashRelay
+from reconciler.actions.mailbox import ConsoleLabelRemover
 from reconciler.adapters.mysql import MysqlMilestones, MysqlTasks, MysqlWriter
 from reconciler.adapters.neon import NeonMilestones, NeonTasks
 from reconciler.core import Cycle, Milestone, MilestoneStore, Outcome, reconcile
@@ -114,7 +116,26 @@ def services_for(options: RunOptions) -> Services:
     # `extras` stays unwired: ADR 0012 open question 8 (where manual lines live) is unsettled.
     key = os.environ.get("CRAFTMYPDF_API_KEY")
     return Services(mailer=mailer_for(options),
-                    pdf=CraftMyPdf(api_key=key) if key else None)
+                    pdf=CraftMyPdf(api_key=key) if key else None,
+                    labels=label_relay_for(options))
+
+
+def label_relay_for(options: RunOptions):
+    """The relay `gmail.archive` takes labels off with; a console one in a dry run.
+
+    None when `GMAIL_LABEL_URL` is unset, and the action then raises when a cycle reaches it —
+    the same loud stop as a missing mailer, never a silent skip that looks like progress.
+    """
+    if options.dry_run:
+        return ConsoleLabelRemover()
+    url = os.environ.get("GMAIL_LABEL_URL")
+    if not url:
+        return None
+    return N8nLabelRelay(
+        url=url,
+        token=os.environ["MAIL_RELAY_TOKEN"],
+        header=os.environ.get("MAIL_RELAY_HEADER", "X-Relay-Token"),
+    )
 
 
 def sink_for(options: RunOptions, definition: ProcessDefinition):
