@@ -177,3 +177,46 @@ stages:
         settled, or successfully delivered? Answer true only for a confirmation of the
         outcome. An earlier, separate email announced that the payment was being sent; that
         announcement must NOT match here.
+
+  # --- housekeeping: archive each mail once the process has moved past it ------------------
+  #
+  # `gmail.archive` takes INBOX off the mail a gate matched (its `evidence.upstream_id`), plus
+  # any `remove_labels`. Our two labelled mails also lose `aware/invoice-approved`, so that
+  # label only ever shows what is still in flight.
+  #
+  # LAST in the file on purpose, though each depends only on its own gate. A pass walks stages
+  # in file order and an `act` that raises ends the pass, so housekeeping placed here can never
+  # stop the invoice itself: by the time the label relay is called, every stage that was ready
+  # has already run.
+  #
+  # The PDF mail is the exception in timing, not in mechanism: it stays in the inbox until
+  # payment_processed, because it is the one worth having in view until the money has landed.
+  - name: approval_mail_archived
+    kind: act
+    after: [data_approved]
+    action: gmail.archive
+    config:
+      evidence_of: data_approved
+      remove_labels: [aware/invoice-approved]
+
+  - name: payment_submitted_mail_archived
+    kind: act
+    after: [payment_submitted]
+    action: gmail.archive
+    config:
+      evidence_of: payment_submitted
+
+  - name: payment_processed_mail_archived
+    kind: act
+    after: [payment_processed]
+    action: gmail.archive
+    config:
+      evidence_of: payment_processed
+
+  - name: invoice_mail_archived
+    kind: act
+    after: [payment_processed]
+    action: gmail.archive
+    config:
+      evidence_of: invoice_approved
+      remove_labels: [aware/invoice-approved]

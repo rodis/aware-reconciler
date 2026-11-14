@@ -55,6 +55,9 @@ spec:
             # iIP1BGn5AziwmFOa). Never the full search here — its bodies OOM-killed n8n's Redis.
             - {name: GMAIL_SEARCH_LIGHT_URL, value: "https://n8n.prod.rods.me/webhook/106884c9-89dc-4a24-b93a-cfaec11f3e51"}
             - {name: GMAIL_TRASH_URL, value: "https://n8n.prod.rods.me/webhook/ca985ed4-0d2b-42fe-a7e7-9a7ba5318d80"}
+            # The invoice's `gmail.archive` stages (n8n `Relay: gmail label remove`, WT077ZcgeAHRiEB5):
+            # removing INBOX is archiving. Same token, same reasoning as the trash relay above.
+            - {name: GMAIL_LABEL_URL, value: "https://n8n.prod.rods.me/webhook/e4f7a1c9-2b60-4d83-9f15-7ac3e50b8d24"}
           volumeMounts:
             - {name: mysql-ca, mountPath: /etc/ssl/mysql, readOnly: true}
           resources:
